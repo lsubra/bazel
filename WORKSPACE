@@ -1,4 +1,4 @@
-workspace(name = "io_bazel")
+workspace(name = "io_bazel_lsubra")
 
 # Protobuf expects an //external:python_headers label which would contain the
 # Python headers if fast Python protos is enabled. Since we are not using fast

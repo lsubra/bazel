@@ -30,7 +30,9 @@ import org.apache.maven.model.building.DefaultModelBuilderFactory;
 import org.apache.maven.model.building.DefaultModelBuildingRequest;
 import org.apache.maven.model.building.FileModelSource;
 import org.apache.maven.model.building.ModelBuildingException;
+import org.apache.maven.model.building.ModelBuildingRequest;
 import org.apache.maven.model.building.ModelBuildingResult;
+import org.apache.maven.model.building.ModelProblemCollector;
 import org.apache.maven.model.building.ModelSource;
 import org.apache.maven.model.building.UrlModelSource;
 import org.apache.maven.model.composition.DefaultDependencyManagementImporter;
@@ -40,6 +42,7 @@ import org.apache.maven.model.plugin.DefaultPluginConfigurationExpander;
 import org.apache.maven.model.profile.DefaultProfileSelector;
 import org.apache.maven.model.resolution.ModelResolver;
 import org.apache.maven.model.resolution.UnresolvableModelException;
+import org.apache.maven.model.validation.ModelValidator;
 import org.eclipse.aether.artifact.Artifact;
 
 import java.io.IOException;
@@ -68,6 +71,18 @@ public class DefaultModelResolver implements ModelResolver {
         .setProfileSelector(new DefaultProfileSelector())
         .setPluginConfigurationExpander(new DefaultPluginConfigurationExpander())
         .setPluginManagementInjector(new DefaultPluginManagementInjector())
+        .setModelValidator(new ModelValidator(){
+
+          @Override
+          public void validateRawModel( Model model, ModelBuildingRequest request, ModelProblemCollector problems ) {
+
+          }
+
+          @Override
+          public  void validateEffectiveModel( Model model, ModelBuildingRequest request, ModelProblemCollector problems ) {
+
+          }
+        })
         .setDependencyManagementImporter(new DefaultDependencyManagementImporter())
         .setDependencyManagementInjector(new DefaultDependencyManagementInjector());
   }
