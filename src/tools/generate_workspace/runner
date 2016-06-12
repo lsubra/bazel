@@ -1,0 +1,6 @@
+#!/bin/bash
+
+bazel build src/tools/generate_workspace:generate_workspace_deploy.jar
+
+export JAVA_HOME="/data/infra/devel/java/current/jre/"
+java -jar bazel-bin/src/tools/generate_workspace/generate_workspace_deploy.jar $@

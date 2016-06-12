@@ -1,0 +1,10 @@
+1. Maven's default validation of systemscoped deps requires absolute paths.
+2. No env variables are substituted by Bazel before invoking this validation,
+   which usually leads to problems when ${java.home} is used in system scoped
+   paths.
+
+
+First attempt was to set JAVA_HOME (bazel run doesn't do it since it controls the
+env variables) using "runner". But even that did not work due to (2) above. So,
+finally, we just removed the validation !
+
