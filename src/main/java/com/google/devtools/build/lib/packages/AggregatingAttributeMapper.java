@@ -36,17 +36,16 @@ import static com.google.devtools.build.lib.syntax.Type.STRING_LIST_DICT;
 import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.CollectionUtils;
+import com.google.devtools.build.lib.packages.Attribute.ComputationLimiter;
 import com.google.devtools.build.lib.packages.BuildType.Selector;
 import com.google.devtools.build.lib.packages.BuildType.SelectorList;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -56,7 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
-
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 
 /**
@@ -69,18 +68,12 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   private static final ImmutableSet<Type<?>> scalarTypes =
       ImmutableSet.of(INTEGER, STRING, LABEL, NODEP_LABEL, OUTPUT, BOOLEAN, TRISTATE, LICENSE);
 
-  /**
-   * Store for all of this rule's attributes that are non-configurable. These are
-   * unconditionally  available to computed defaults no matter what dependencies
-   * they've declared.
-   */
-  private final List<String> nonConfigurableAttributes;
+  private final Rule rule;
 
   private AggregatingAttributeMapper(Rule rule) {
     super(rule.getPackage(), rule.getRuleClassObject(), rule.getLabel(),
         rule.getAttributeContainer());
-
-    nonConfigurableAttributes = rule.getRuleClassObject().getNonConfigurableAttributes();
+    this.rule = rule;
   }
 
   public static AggregatingAttributeMapper of(Rule rule) {
@@ -88,8 +81,15 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   }
 
   /**
-   * Override that also visits the rule's configurable attribute keys (which are
-   * themselves labels).
+   * Returns all of this rule's attributes that are non-configurable. These are unconditionally
+   * available to computed defaults no matter what dependencies they've declared.
+   */
+  private List<String> getNonConfigurableAttributes() {
+    return rule.getRuleClassObject().getNonConfigurableAttributes();
+  }
+
+  /**
+   * Override that also visits the rule's configurable attribute keys (which are themselves labels).
    *
    * <p>Note that we directly parse the selectors rather than just calling {@link #visitAttribute}
    * to iterate over all possible values. That's because {@link #visitAttribute} can grow
@@ -98,12 +98,14 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
    * path whenever actual value iteration isn't specifically needed.
    */
   @Override
-  protected void visitLabels(Attribute attribute, AcceptsLabelAttribute observer) {
+  protected void visitLabels(Attribute attribute, AcceptsLabelAttribute observer)
+      throws InterruptedException {
     visitLabels(attribute, true, observer);
   }
 
-  private void visitLabels(Attribute attribute, boolean includeSelectKeys,
-    AcceptsLabelAttribute observer) {
+  private void visitLabels(
+      final Attribute attribute, boolean includeSelectKeys, final AcceptsLabelAttribute observer)
+      throws InterruptedException {
     Type<?> type = attribute.getType();
     SelectorList<?> selectorList = getSelectorList(attribute.getName(), type);
     if (selectorList == null) {
@@ -112,9 +114,15 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
         // (computed) values and look for labels.
         for (Object value : visitAttribute(attribute.getName(), attribute.getType())) {
           if (value != null) {
-            for (Label label : extractLabels(type, value)) {
-              observer.acceptLabelAttribute(getLabel().resolveRepositoryRelative(label), attribute);
-            }
+            type.visitLabels(new Type.LabelVisitor() {
+              @Override
+              public void visit(@Nullable Label label) throws InterruptedException {
+                if (label != null) {
+                  observer.acceptLabelAttribute(
+                      getLabel().resolveRepositoryRelative(label), attribute);
+                }
+              }
+            }, value);
           }
         }
       } else {
@@ -130,21 +138,28 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
           Object value = selector.isValueSet(selectorEntry.getKey())
               ? selectorEntry.getValue()
               : attribute.getDefaultValue(null);
-          for (Label label : extractLabels(type, value)) {
-            observer.acceptLabelAttribute(getLabel().resolveRepositoryRelative(label), attribute);
-          }
+          type.visitLabels(new Type.LabelVisitor() {
+            @Override
+            public void visit(@Nullable Label label) throws InterruptedException {
+              if (label != null) {
+                observer.acceptLabelAttribute(
+                    getLabel().resolveRepositoryRelative(label), attribute);
+              }
+            }
+          }, value);
         }
       }
     }
   }
 
   /**
-   * Returns all labels reachable via the given attribute. If a label is listed multiple times,
-   * each instance appears in the returned list.
+   * Returns all labels reachable via the given attribute. If a label is listed multiple times, each
+   * instance appears in the returned list.
    *
    * @param includeSelectKeys whether to include config_setting keys for configurable attributes
    */
-  public List<Label> getReachableLabels(String attributeName, boolean includeSelectKeys) {
+  public List<Label> getReachableLabels(String attributeName, boolean includeSelectKeys)
+      throws InterruptedException {
     final ImmutableList.Builder<Label> builder = ImmutableList.builder();
     visitLabels(getAttributeDefinition(attributeName), includeSelectKeys,
         new AcceptsLabelAttribute() {
@@ -174,8 +189,9 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
       //  3) "attr = select({...})". With just a single select, visitAttribute runs efficiently.
       for (Object value : visitAttribute(attrName, attrType)) {
         if (value != null) {
-          duplicates.addAll(CollectionUtils.duplicatedElementsOf(
-              ImmutableList.copyOf(extractLabels(attrType, value))));
+          // TODO(bazel-team): Calculate duplicates directly using attrType.visitLabels in order to
+          // avoid intermediate collections here.
+          duplicates.addAll(CollectionUtils.duplicatedElementsOf(extractLabels(attrType, value)));
         }
       }
     } else {
@@ -190,7 +206,7 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
         // they're in different selector paths (since only one path can actually get chosen).
         Set<Label> selectorLabels = new LinkedHashSet<>();
         for (Object selectorValue : selector.getEntries().values()) {
-          Iterable<Label> labelsInSelectorValue = extractLabels(attrType, selectorValue);
+          List<Label> labelsInSelectorValue = extractLabels(attrType, selectorValue);
           // Duplicates within a single path are not okay.
           duplicates.addAll(CollectionUtils.duplicatedElementsOf(labelsInSelectorValue));
           Iterables.addAll(selectorLabels, labelsInSelectorValue);
@@ -305,8 +321,9 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   /**
    * Returns a list of all possible values an attribute can take for this rule.
    *
-   * <p>Note that when an attribute uses multiple selects, it can potentially take on many
-   * values. So be cautious about unnecessarily relying on this method.
+   * <p>Note that when an attribute uses multiple selects, or is a {@link Attribute.ComputedDefault}
+   * that depends on configurable attributes, it can potentially take on many values. So be cautious
+   * about unnecessarily relying on this method.
    */
   public <T> Iterable<T> visitAttribute(String attributeName, Type<T> type) {
     // If this attribute value is configurable, visit all possible values.
@@ -324,17 +341,7 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
     // or y1, then compute default values for the (x1,y1), (x1,y2), (x2,y1), and (x2,y2) cases.
     Attribute.ComputedDefault computedDefault = getComputedDefault(attributeName, type);
     if (computedDefault != null) {
-      // This will hold every (value1, value2, ..) combination of the declared dependencies.
-      List<Map<String, Object>> depMaps = new LinkedList<>();
-      // Collect those combinations.
-      mapDepsForComputedDefault(computedDefault.dependencies(), depMaps,
-          ImmutableMap.<String, Object>of());
-      List<T> possibleValues = new ArrayList<>(); // Not ImmutableList.Builder: values may be null.
-      // For each combination, call getDefault on a specialized AttributeMap providing those values.
-      for (Map<String, Object> depMap : depMaps) {
-        possibleValues.add(type.cast(computedDefault.getDefault(mapBackedAttributeMap(depMap))));
-      }
-      return possibleValues;
+      return computedDefault.getPossibleValues(type, rule);
     }
 
     // For any other attribute, just return its direct value.
@@ -373,7 +380,13 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
     // have no impact on the dependency structure.
 
     if (selectors.isEmpty()) {
-      valuesBuilder.add(Preconditions.checkNotNull(currentValueSoFar));
+      if (currentValueSoFar != null) {
+        // Null values arise when a None is used as the value of a Selector for a type without a
+        // default value.
+        // TODO(gregce): visitAttribute should probably convey that an unset attribute is possible.
+        // Therefore we need to actually handle null values here.
+        valuesBuilder.add(currentValueSoFar);
+      }
     } else {
       Selector<T> firstSelector = selectors.get(0);
       List<Selector<T>> remainingSelectors = selectors.subList(1, selectors.size());
@@ -440,13 +453,12 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   }
 
   /**
-   * Given (possibly configurable) attributes that a computed default depends on, creates an
-   * {attrName -> attrValue} map for every possible combination of those attribute values and
-   * returns a list of all the maps. This defines the complete dependency space that can affect
-   * the computed default's values.
+   * Given a list of attributes, creates an {attrName -> attrValue} map for every possible
+   * combination of those attributes' values and returns a list of all the maps.
    *
-   * <p>For example, given dependencies x and y, which might respectively have values x1, x2 and
+   * <p>For example, given attributes x and y, which respectively have possible values x1, x2 and
    * y1, y2, this returns:
+   *
    * <pre>
    *   [
    *    {x: x1, y: y1},
@@ -456,55 +468,88 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
    *   ]
    * </pre>
    *
-   * @param depAttributes the names of the attributes this computed default depends on
-   * @param mappings the list of {attrName --> attrValue} maps defining the computed default's
-   *                 dependency space. This is where this method's results are written.
-   * @param currentMap a (possibly non-empty) map to add {attrName --> attrValue}
-   *                   entries to. Outside callers can just pass in an empty map.
+   * <p>The work done by this method may be limited by providing a {@link ComputationLimiter} that
+   * throws if too much work is attempted.
    */
-  private void mapDepsForComputedDefault(List<String> depAttributes,
-      List<Map<String, Object>> mappings, Map<String, Object> currentMap) {
-    // Because this method uses exponential time/space on the number of inputs, keep the
-    // maximum number of inputs conservatively small.
-    Preconditions.checkState(depAttributes.size() <= 2);
+  <TException extends Exception> List<Map<String, Object>> visitAttributes(
+      List<String> attributes, ComputationLimiter<TException> limiter) throws TException {
+    List<Map<String, Object>> depMaps = new LinkedList<>();
+    AtomicInteger combinationsSoFar = new AtomicInteger(0);
+    visitAttributesInner(
+        attributes,
+        depMaps,
+        new HashMap<String, Object>(attributes.size()),
+        combinationsSoFar,
+        limiter);
+    return depMaps;
+  }
 
-    if (depAttributes.isEmpty()) {
-      // Recursive base case: store whatever's already been populated in currentMap.
-      mappings.add(currentMap);
+  /**
+   * A recursive function used in the implementation of {@link #visitAttributes}.
+   *
+   * @param attributes a list of attributes that are yet to be visited.
+   * @param mappings a mutable list of {attrName --> attrValue} maps collected so far. This method
+   *     will add newly discovered maps to the list.
+   * @param currentMap {attrName --> attrValue} assignments accumulated so far, not including those
+   *     in {@code attributes}. This map may be mutated and as such must be copied if we wish to
+   *     preserve its state, such as in the base case.
+   * @param combinationsSoFar a counter for all previously processed combinations of possible
+   *     values.
+   * @param limiter a strategy to limit the work done by invocations of this method.
+   */
+  private <TException extends Exception> void visitAttributesInner(
+      List<String> attributes,
+      List<Map<String, Object>> mappings,
+      Map<String, Object> currentMap,
+      AtomicInteger combinationsSoFar,
+      ComputationLimiter<TException> limiter)
+      throws TException {
+    if (attributes.isEmpty()) {
+      // Because this method uses exponential time/space on the number of inputs, we may limit
+      // the total number of method calls.
+      limiter.onComputationCount(combinationsSoFar.incrementAndGet());
+      // Recursive base case: snapshot and store whatever's already been populated in currentMap.
+      mappings.add(new HashMap<>(currentMap));
       return;
     }
 
     // Take the first attribute in the dependency list and iterate over all its values. For each
-    // value x, copy currentMap with the additional entry { firstAttrName: x }, then feed
+    // value x, update currentMap with the additional entry { firstAttrName: x }, then feed
     // this recursively into a subcall over all remaining dependencies. This recursively
     // continues until we run out of values.
-    String firstAttribute = depAttributes.get(0);
-    for (Object value : visitAttribute(firstAttribute, getAttributeType(firstAttribute))) {
-      Map<String, Object> newMap = new HashMap<>();
-      newMap.putAll(currentMap);
-      newMap.put(firstAttribute, value);
-      mapDepsForComputedDefault(depAttributes.subList(1, depAttributes.size()), mappings, newMap);
+    String currentAttribute = attributes.get(0);
+    Iterable<?> firstAttributePossibleValues =
+        visitAttribute(currentAttribute, getAttributeType(currentAttribute));
+    List<String> restOfAttrs = attributes.subList(1, attributes.size());
+    for (Object value : firstAttributePossibleValues) {
+      // Overwrite each time.
+      currentMap.put(currentAttribute, value);
+      visitAttributesInner(restOfAttrs, mappings, currentMap, combinationsSoFar, limiter);
     }
   }
 
   /**
-   * A custom {@link AttributeMap} that reads attribute values from the given Map. All
-   * non-configurable attributes are also readable. Any attempt to read an attribute
-   * that's not in one of these two cases triggers an IllegalArgumentException.
+   * Returns an {@link AttributeMap} that delegates to {@code AggregatingAttributeMapper.this}
+   * except for {@link #get} calls for attributes that are configurable. In that case, the {@link
+   * AttributeMap} looks up an attribute's value in {@code directMap}. Any attempt to {@link #get} a
+   * configurable attribute that's not in {@code directMap} causes an {@link
+   * IllegalArgumentException} to be thrown.
    */
-  private AttributeMap mapBackedAttributeMap(final Map<String, Object> directMap) {
+  AttributeMap createMapBackedAttributeMap(final Map<String, Object> directMap) {
     final AggregatingAttributeMapper owner = AggregatingAttributeMapper.this;
     return new AttributeMap() {
 
       @Override
       public <T> T get(String attributeName, Type<T> type) {
         owner.checkType(attributeName, type);
-        if (nonConfigurableAttributes.contains(attributeName)) {
+        if (getNonConfigurableAttributes().contains(attributeName)) {
           return owner.get(attributeName, type);
         }
         if (!directMap.containsKey(attributeName)) {
-          throw new IllegalArgumentException("attribute \"" + attributeName
-              + "\" isn't available in this computed default context");
+          throw new IllegalArgumentException(
+              "attribute \""
+                  + attributeName
+                  + "\" isn't available in this computed default context");
         }
         return type.cast(directMap.get(attributeName));
       }
@@ -514,34 +559,87 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
         return owner.isConfigurable(attributeName, type);
       }
 
-      @Override public String getName() { return owner.getName(); }
-      @Override public Label getLabel() { return owner.getLabel(); }
-      @Override public Iterable<String> getAttributeNames() {
-        return ImmutableList.<String>builder()
-            .addAll(directMap.keySet()).addAll(nonConfigurableAttributes).build();
+      @Override
+      public String getName() {
+        return owner.getName();
       }
+
       @Override
-      public void visitLabels(AcceptsLabelAttribute observer) { owner.visitLabels(observer); }
+      public Label getLabel() {
+        return owner.getLabel();
+      }
+
       @Override
-      public String getPackageDefaultHdrsCheck() { return owner.getPackageDefaultHdrsCheck(); }
+      public Iterable<String> getAttributeNames() {
+        return ImmutableList.<String>builder()
+            .addAll(directMap.keySet())
+            .addAll(getNonConfigurableAttributes())
+            .build();
+      }
+
       @Override
-      public Boolean getPackageDefaultTestOnly() { return owner.getPackageDefaultTestOnly(); }
+      public void visitLabels(AcceptsLabelAttribute observer) throws InterruptedException {
+        owner.visitLabels(observer);
+      }
+
       @Override
-      public String getPackageDefaultDeprecation() { return owner.getPackageDefaultDeprecation(); }
+      public String getPackageDefaultHdrsCheck() {
+        return owner.getPackageDefaultHdrsCheck();
+      }
+
+      @Override
+      public Boolean getPackageDefaultTestOnly() {
+        return owner.getPackageDefaultTestOnly();
+      }
+
+      @Override
+      public String getPackageDefaultDeprecation() {
+        return owner.getPackageDefaultDeprecation();
+      }
+
       @Override
       public ImmutableList<String> getPackageDefaultCopts() {
         return owner.getPackageDefaultCopts();
       }
-      @Nullable @Override
-      public Type<?> getAttributeType(String attrName) { return owner.getAttributeType(attrName); }
-      @Nullable @Override  public Attribute getAttributeDefinition(String attrName) {
+
+      @Nullable
+      @Override
+      public Type<?> getAttributeType(String attrName) {
+        return owner.getAttributeType(attrName);
+      }
+
+      @Nullable
+      @Override
+      public Attribute getAttributeDefinition(String attrName) {
         return owner.getAttributeDefinition(attrName);
       }
-      @Override public boolean isAttributeValueExplicitlySpecified(String attributeName) {
+
+      @Override
+      public boolean isAttributeValueExplicitlySpecified(String attributeName) {
         return owner.isAttributeValueExplicitlySpecified(attributeName);
       }
+
       @Override
-      public boolean has(String attrName, Type<?> type) { return owner.has(attrName, type); }
+      public boolean has(String attrName, Type<?> type) {
+        return owner.has(attrName, type);
+      }
     };
+  }
+
+  private static ImmutableList<Label> extractLabels(Type<?> type, Object value) {
+    try {
+      final ImmutableList.Builder<Label> result = ImmutableList.builder();
+      type.visitLabels(new Type.LabelVisitor() {
+        @Override
+        public void visit(@Nullable Label label) {
+          if (label != null) {
+            result.add(label);
+          }
+        }
+      }, value);
+      return result.build();
+    } catch (InterruptedException e) {
+      throw new IllegalStateException("Unexpected InterruptedException", e);
+    }
   }
 }

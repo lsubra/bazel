@@ -131,6 +131,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
     private Artifact idlSourceJar = null;
     private OutputJar resourceJar = null;
     private String javaPackage = null;
+    private String idlImportRoot = null;
     private final Set<SourceDirectory> resourceDirs = new LinkedHashSet<>();
     private final Set<SourceDirectory> assetDirs = new LinkedHashSet<>();
     private final Set<SourceDirectory> idlDirs = new LinkedHashSet<>();
@@ -138,10 +139,12 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
     private final Set<Artifact> idlGeneratedJavaFiles = new LinkedHashSet<>();
     private final Set<Artifact> apksUnderTest = new LinkedHashSet<>();
     private boolean definesAndroidResources;
+    private Artifact aar = null;
 
     public AndroidIdeInfoProvider build() {
       return new AndroidIdeInfoProvider(
           javaPackage,
+          idlImportRoot,
           manifest,
           generatedManifest,
           apk,
@@ -149,6 +152,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
           idlSourceJar,
           resourceJar,
           definesAndroidResources,
+          aar,
           ImmutableList.copyOf(assetDirs),
           ImmutableList.copyOf(resourceDirs),
           ImmutableList.copyOf(idlDirs),
@@ -199,6 +203,16 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
 
     public Builder setResourceJar(OutputJar resourceJar) {
       this.resourceJar = resourceJar;
+      return this;
+    }
+
+    public Builder setAar(Artifact aar) {
+      this.aar = aar;
+      return this;
+    }
+
+    public Builder addIdlImportRoot(String idlImportRoot) {
+      this.idlImportRoot = idlImportRoot;
       return this;
     }
 
@@ -283,6 +297,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
   }
 
   private final String javaPackage;
+  private final String idlImportRoot;
   private final Artifact manifest;
   private final Artifact generatedManifest;
   private final Artifact signedApk;
@@ -291,6 +306,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
   @Nullable private final OutputJar resourceJar;
   private final ImmutableCollection<SourceDirectory> resourceDirs;
   private final boolean definesAndroidResources;
+  private final Artifact aar;
   private final ImmutableCollection<SourceDirectory> assetDirs;
   private final ImmutableCollection<SourceDirectory> idlImports;
   private final ImmutableCollection<Artifact> idlSrcs;
@@ -299,6 +315,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
 
   AndroidIdeInfoProvider(
       String javaPackage,
+      String idlImportRoot,
       @Nullable Artifact manifest,
       @Nullable Artifact generatedManifest,
       @Nullable Artifact signedApk,
@@ -306,6 +323,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
       @Nullable Artifact idlSourceJar,
       @Nullable OutputJar resourceJar,
       boolean definesAndroidResources,
+      @Nullable Artifact aar,
       ImmutableCollection<SourceDirectory> assetDirs,
       ImmutableCollection<SourceDirectory> resourceDirs,
       ImmutableCollection<SourceDirectory> idlImports,
@@ -313,6 +331,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
       ImmutableCollection<Artifact> idlGeneratedJavaFiles,
       ImmutableCollection<Artifact> apksUnderTest) {
     this.javaPackage = javaPackage;
+    this.idlImportRoot = idlImportRoot;
     this.manifest = manifest;
     this.generatedManifest = generatedManifest;
     this.signedApk = signedApk;
@@ -320,6 +339,7 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
     this.idlSourceJar = idlSourceJar;
     this.resourceJar = resourceJar;
     this.definesAndroidResources = definesAndroidResources;
+    this.aar = aar;
     this.assetDirs = assetDirs;
     this.resourceDirs = resourceDirs;
     this.idlImports = idlImports;
@@ -353,6 +373,11 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
     return this.definesAndroidResources;
   }
 
+  @Nullable
+  public String getIdlImportRoot() {
+    return idlImportRoot;
+  }
+
   /** Returns the direct debug key signed apk, if there is one. */
   @Nullable
   public Artifact getSignedApk() {
@@ -372,6 +397,11 @@ public final class AndroidIdeInfoProvider implements TransitiveInfoProvider {
   @Nullable
   public OutputJar getResourceJar() {
     return resourceJar;
+  }
+
+  @Nullable
+  public Artifact getAar() {
+    return aar;
   }
 
   /** A list of the direct Resource directories. */

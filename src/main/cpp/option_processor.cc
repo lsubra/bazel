@@ -27,18 +27,20 @@
 #include "src/main/cpp/blaze_util_platform.h"
 #include "src/main/cpp/util/file.h"
 #include "src/main/cpp/util/strings.h"
-
-using std::list;
-using std::map;
-using std::set;
-using std::vector;
+#include "src/main/cpp/workspace_layout.h"
 
 // On OSX, there apparently is no header that defines this.
 extern char **environ;
 
 namespace blaze {
 
-constexpr char BlazeStartupOptions::WorkspacePrefix[];
+using std::list;
+using std::map;
+using std::set;
+using std::string;
+using std::vector;
+
+constexpr char WorkspaceLayout::WorkspacePrefix[];
 
 OptionProcessor::RcOption::RcOption(int rcfile_index, const string& option)
     : rcfile_index_(rcfile_index), option_(option) {
@@ -109,9 +111,9 @@ blaze_exit_code::ExitCode OptionProcessor::RcFile::Parse(
 
     if (command == "import") {
       if (words.size() != 2
-          || (words[1].compare(0, BlazeStartupOptions::WorkspacePrefixLength,
-                               BlazeStartupOptions::WorkspacePrefix) == 0
-              && !BlazeStartupOptions::WorkspaceRelativizeRcFilePath(
+          || (words[1].compare(0, WorkspaceLayout::WorkspacePrefixLength,
+                               WorkspaceLayout::WorkspacePrefix) == 0
+              && !WorkspaceLayout::WorkspaceRelativizeRcFilePath(
                   workspace, &words[1]))) {
         blaze_util::StringPrintf(error,
             "Invalid import declaration in .blazerc file '%s': '%s'",
@@ -159,48 +161,10 @@ blaze_exit_code::ExitCode OptionProcessor::RcFile::Parse(
   return blaze_exit_code::SUCCESS;
 }
 
-OptionProcessor::OptionProcessor()
-    : initialized_(false), parsed_startup_options_(new BlazeStartupOptions()) {
-}
-
-// Return the path of the depot .blazerc file.
-string OptionProcessor::FindDepotBlazerc(const string& workspace) {
-  // Package semantics are ignored here, but that's acceptable because
-  // blaze.blazerc is a configuration file.
-  vector<string> candidates;
-  BlazeStartupOptions::WorkspaceRcFileSearchPath(&candidates);
-  for (const auto& candidate : candidates) {
-    string blazerc = blaze_util::JoinPath(workspace, candidate);
-    if (!access(blazerc.c_str(), R_OK)) {
-      return blazerc;
-    }
-  }
-
-  return "";
-}
-
-// Return the path of the .blazerc file that sits alongside the binary.
-// This allows for canary or cross-platform Blazes operating on the same depot
-// to have customized behavior.
-string OptionProcessor::FindAlongsideBinaryBlazerc(const string& cwd,
-                                                   const string& arg0) {
-  string path = arg0[0] == '/' ? arg0 : blaze_util::JoinPath(cwd, arg0);
-  string base = blaze_util::Basename(arg0);
-  string binary_blazerc_path = path + "." + base + "rc";
-  if (!access(binary_blazerc_path.c_str(), R_OK)) {
-    return binary_blazerc_path;
-  }
-  return "";
-}
-
-// Return the path of the bazelrc file that sits in /etc.
-// This allows for installing Bazel on system-wide directory.
-string OptionProcessor::FindSystemWideBlazerc() {
-  string path = BlazeStartupOptions::SystemWideRcPath();
-  if (!path.empty() && !access(path.c_str(), R_OK)) {
-    return path;
-  }
-  return "";
+OptionProcessor::OptionProcessor(
+    std::unique_ptr<StartupOptions> default_startup_options) :
+    initialized_(false),
+    parsed_startup_options_(std::move(default_startup_options)) {
 }
 
 // Return the path to the user's rc file.  If cmdLineRcFile != NULL,
@@ -277,19 +241,24 @@ blaze_exit_code::ExitCode OptionProcessor::ParseOptions(
     }
   }
 
+  blaze_exit_code::ExitCode validate_startup_options_exit_code =
+      parsed_startup_options_->ValidateStartupOptions(args, error);
+  if (validate_startup_options_exit_code != blaze_exit_code::SUCCESS) {
+    return validate_startup_options_exit_code;
+  }
+
   // Parse depot and user blazerc files.
   // This is a little inefficient (copying a multimap around), but it is a
   // small one and this way I don't have to care about memory management.
   vector<string> candidate_blazerc_paths;
   if (use_master_blazerc) {
-    candidate_blazerc_paths.push_back(FindDepotBlazerc(workspace));
-    candidate_blazerc_paths.push_back(FindAlongsideBinaryBlazerc(cwd, args[0]));
-    candidate_blazerc_paths.push_back(FindSystemWideBlazerc());
+    WorkspaceLayout::FindCandidateBlazercPaths(workspace, cwd, args,
+                                               &candidate_blazerc_paths);
   }
 
   string user_blazerc_path;
   blaze_exit_code::ExitCode find_blazerc_exit_code = FindUserBlazerc(
-      blazerc, BlazeStartupOptions::RcBasename(), workspace, &user_blazerc_path,
+      blazerc, WorkspaceLayout::RcBasename(), workspace, &user_blazerc_path,
       error);
   if (find_blazerc_exit_code != blaze_exit_code::SUCCESS) {
     return find_blazerc_exit_code;
@@ -460,13 +429,24 @@ void OptionProcessor::AddRcfileArgsAndOptions(bool batch, const string& cwd) {
     command_arguments_.push_back("--ignore_client_env");
   } else {
     for (char** env = environ; *env != NULL; env++) {
-      command_arguments_.push_back("--client_env=" + string(*env));
+      string env_str(*env);
+      int pos = env_str.find("=");
+      if (pos != string::npos) {
+        string name = env_str.substr(0, pos);
+        if (name == "PATH") {
+          env_str = "PATH=" + ConvertPathList(env_str.substr(pos + 1));
+        } else if (name == "TMP") {
+          // A valid Windows path "c:/foo" is also a valid Unix path list of
+          // ["c", "/foo"] so must use ConvertPath here. See GitHub issue #1684.
+          env_str = "TMP=" + ConvertPath(env_str.substr(pos + 1));
+        }
+      }
+      command_arguments_.push_back("--client_env=" + env_str);
     }
   }
   command_arguments_.push_back("--client_cwd=" + blaze::ConvertPath(cwd));
 
-  const char *emacs = getenv("EMACS");
-  if (emacs != NULL && strcmp(emacs, "t") == 0) {
+  if (IsEmacsTerminal()) {
     command_arguments_.push_back("--emacs");
   }
 }
@@ -481,8 +461,8 @@ const string& OptionProcessor::GetCommand() const {
   return command_;
 }
 
-const BlazeStartupOptions& OptionProcessor::GetParsedStartupOptions() const {
-  return *parsed_startup_options_.get();
+StartupOptions* OptionProcessor::GetParsedStartupOptions() const {
+  return parsed_startup_options_.get();
 }
 
 OptionProcessor::~OptionProcessor() {

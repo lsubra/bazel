@@ -17,11 +17,11 @@
 # Test //external mechanisms
 #
 
-# Load test environment
-src=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source $src/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
-source $src/remote_helpers.sh \
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
+source "${CURRENT_DIR}/remote_helpers.sh" \
   || { echo "remote_helpers.sh not found!" >&2; exit 1; }
 
 function set_up() {
@@ -49,7 +49,7 @@ EOF
 
 function zip_up() {
   repo2_zip=$TEST_TMPDIR/fox.zip
-  zip -0 -r $repo2_zip WORKSPACE fox
+  zip -0 -ry $repo2_zip WORKSPACE fox
 }
 
 function tar_gz_up() {
@@ -83,8 +83,6 @@ function http_archive_helper() {
   zipper=$1
   local write_workspace
   [[ $# -gt 1 ]] && [[ "$2" = "nowrite" ]] && write_workspace=1 || write_workspace=0
-  local do_symlink
-  [[ $# -gt 1 ]] && [[ "$2" = "do_symlink" ]] && do_symlink=1 || do_symlink=0
 
   if [[ $write_workspace -eq 0 ]]; then
     # Create a zipped-up repository HTTP response.
@@ -107,9 +105,7 @@ echo $what_does_the_fox_say
 EOF
     chmod +x fox/male
     ln -s male fox/male_relative
-    if [[ $do_symlink = 1 ]]; then
-      ln -s /fox/male fox/male_absolute
-    fi
+    ln -s /fox/male fox/male_absolute
     # Add some padding to the .zip to test that Bazel's download logic can
     # handle breaking a response into chunks.
     dd if=/dev/zero of=fox/padding bs=1024 count=10240 >& $TEST_log
@@ -151,9 +147,7 @@ fi
 
   base_external_path=bazel-out/../external/endangered/fox
   assert_files_same ${base_external_path}/male ${base_external_path}/male_relative
-  if [[ $do_symlink = 1 ]]; then
-    assert_files_same ${base_external_path}/male ${base_external_path}/male_absolute
-  fi
+  assert_files_same ${base_external_path}/male ${base_external_path}/male_absolute
 }
 
 function assert_files_same() {
@@ -187,13 +181,13 @@ EOF
 }
 
 function test_http_archive_tgz() {
-  http_archive_helper tar_gz_up "do_symlink"
+  http_archive_helper tar_gz_up
   bazel shutdown
-  http_archive_helper tar_gz_up "do_symlink"
+  http_archive_helper tar_gz_up
 }
 
 function test_http_archive_tar_xz() {
-  http_archive_helper tar_xz_up "do_symlink"
+  http_archive_helper tar_xz_up
 }
 
 function test_http_archive_no_server() {
@@ -287,22 +281,6 @@ EOF
   expect_log $what_does_the_fox_say
 }
 
-# Pending proper external file handling
-function DISABLED_test_changed_zip() {
-  nc_port=$(pick_random_unused_tcp_port) || fail "Couldn't get TCP port"
-  http_archive_helper zip_up
-  http_archive_helper zip_up "nowrite"
-  expect_not_log "Downloading from"
-  local readonly output_base=$(bazel info output_base)
-  local readonly repo_zip=$output_base/external/endangered/fox.zip
-  rm $repo_zip || fail "Couldn't delete $repo_zip"
-  touch $repo_zip || fail "Couldn't touch $repo_zip"
-  [[ -s $repo_zip ]] && fail "File size not 0"
-  http_archive_helper zip_up "nowrite"
-  expect_log "Downloading from"
-  [[ -s $repo_zip ]] || fail "File size was 0"
-}
-
 function test_cached_across_server_restart() {
   http_archive_helper zip_up
   bazel shutdown >& $TEST_log || fail "Couldn't shut down"
@@ -371,15 +349,7 @@ EOF
 }
 
 function test_http_404() {
-  http_response=$TEST_TMPDIR/http_response
-  cat > $http_response <<EOF
-HTTP/1.0 404 Not Found
-
-Help, I'm lost!
-EOF
-  nc_port=$(pick_random_unused_tcp_port) || exit 1
-  nc_l $nc_port < $http_response &
-  nc_pid=$!
+  serve_not_found "Help, I'm lost!"
 
   cd ${WORKSPACE_DIR}
   cat > WORKSPACE <<EOF
@@ -750,7 +720,8 @@ EOF
 function test_changing_build_file() {
   echo "abc" > w
   echo "def" > w.new
-  tar czf x.tar.gz w w.new
+  echo "I'm a build file" > BUILD
+  tar czf x.tar.gz w w.new BUILD
   local sha256=$(sha256sum x.tar.gz | cut -f 1 -d ' ')
   serve_file x.tar.gz
 
@@ -829,6 +800,45 @@ EOF
       || fail "Expected success"
   cat "$TEST_TMPDIR/queryout" > "$TEST_log"
   expect_log "//external:androidsdk"
+}
+
+function test_flip_flopping() {
+  REPO_PATH=$TEST_TMPDIR/repo
+  mkdir -p "$REPO_PATH"
+  cd "$REPO_PATH"
+  touch WORKSPACE BUILD foo
+  zip -r repo.zip *
+  startup_server $PWD
+  # Make the remote repo and local repo slightly different.
+  rm foo
+  touch bar
+  cd -
+
+  cat > local_ws <<EOF
+local_repository(
+    name = "repo",
+    path = "$REPO_PATH",
+)
+EOF
+  cat > remote_ws <<EOF
+http_archive(
+    name = "repo",
+    url = "http://localhost:$fileserver_port/repo.zip",
+)
+EOF
+  external_dir=$(bazel info output_base)/external
+  for i in $(seq 1 3); do
+    cp local_ws WORKSPACE
+    bazel build @repo//:all &> $TEST_log || fail "Build failed"
+    test -L "$external_dir/repo" || fail "creating local symlink failed"
+    test -a "$external_dir/repo/bar" || fail "bar not found"
+    cp remote_ws WORKSPACE
+    bazel build @repo//:all &> $TEST_log || fail "Build failed"
+    test -d "$external_dir//repo" || fail "creating remote repo failed"
+    test -a "$external_dir/repo/foo" || fail "foo not found"
+  done
+
+  shutdown_server
 }
 
 run_suite "external tests"

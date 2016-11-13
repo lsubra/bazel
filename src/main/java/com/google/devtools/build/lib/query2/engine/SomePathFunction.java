@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunctio
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * A somepath(x, y) query expression, which computes the set of nodes
@@ -50,11 +51,14 @@ class SomePathFunction implements QueryFunction {
   }
 
   @Override
-  public <T> void eval(QueryEnvironment<T> env, QueryExpression expression,
-      List<Argument> args, final Callback<T> callback)
-      throws QueryException, InterruptedException {
-    Set<T> fromValue = QueryUtil.evalAll(env, args.get(0).getExpression());
-    Set<T> toValue = QueryUtil.evalAll(env, args.get(1).getExpression());
+  public <T> void eval(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      QueryExpression expression,
+      List<Argument> args,
+      final Callback<T> callback) throws QueryException, InterruptedException {
+    Set<T> fromValue = QueryUtil.evalAll(env, context, args.get(0).getExpression());
+    Set<T> toValue = QueryUtil.evalAll(env, context, args.get(1).getExpression());
 
     // Implementation strategy: for each x in "from", compute its forward
     // transitive closure.  If it intersects "to", then do a path search from x
@@ -81,5 +85,16 @@ class SomePathFunction implements QueryFunction {
       uniquifier.unique(xtc);
     }
     callback.process(ImmutableSet.<T>of());
+  }
+
+  @Override
+  public <T> void parEval(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      QueryExpression expression,
+      List<Argument> args,
+      ThreadSafeCallback<T> callback,
+      ForkJoinPool forkJoinPool) throws QueryException, InterruptedException {
+    eval(env, context, expression, args, callback);
   }
 }

@@ -23,6 +23,7 @@ import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.ASSEMBLER_WIT
 import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.CPP_HEADER;
 import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.CPP_SOURCE;
 import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.C_SOURCE;
+import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.INTERFACE_SHARED_LIBRARY;
 import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.OBJECT_FILE;
 import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.PIC_ARCHIVE;
 import static com.google.devtools.build.lib.rules.cpp.CppFileTypes.PIC_OBJECT_FILE;
@@ -38,6 +39,7 @@ import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.ImplicitOutputsFunction.SafeImplicitOutputsFunction;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesCollector.InstrumentationSpec;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.LipoMode;
 
@@ -45,6 +47,11 @@ import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.LipoM
  * Rule class definitions for C++ rules.
  */
 public class CppRuleClasses {
+
+  /** Returns true if this rule should create a dynamic library. */
+  public static boolean shouldCreateDynamicLibrary(AttributeMap rule) {
+    return !rule.get("linkstatic", Type.BOOLEAN) && CcLibrary.appearsToHaveObjectFiles(rule);
+  }
 
   /**
    * Implementation for the :lipo_context_collector attribute.
@@ -94,6 +101,7 @@ public class CppRuleClasses {
       ALWAYS_LINK_LIBRARY,
       ALWAYS_LINK_PIC_LIBRARY,
       SHARED_LIBRARY,
+      INTERFACE_SHARED_LIBRARY,
       VERSIONED_SHARED_LIBRARY,
       OBJECT_FILE,
       PIC_OBJECT_FILE);
@@ -224,6 +232,12 @@ public class CppRuleClasses {
       "header_module_includes_dependencies";
 
   /**
+   * A string constant for switching on that header modules are pruned based on the results of
+   * include scanning.
+   */
+  public static final String PRUNE_HEADER_MODULES = "prune_header_modules";
+
+  /**
    * A string constant for the no_legacy_features feature.
    *
    * <p>If this feature is enabled, Bazel will not extend the crosstool configuration with the
@@ -283,4 +297,7 @@ public class CppRuleClasses {
    * A string constant for the coverage feature.
    */
   public static final String COVERAGE = "coverage";
+
+  /** A string constant for the match-clif feature. */
+  public static final String MATCH_CLIF = "match_clif";
 }

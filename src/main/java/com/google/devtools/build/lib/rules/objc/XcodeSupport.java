@@ -35,7 +35,6 @@ import com.google.devtools.build.lib.rules.objc.XcodeProvider.Builder;
 import com.google.devtools.build.lib.rules.objc.XcodeProvider.Project;
 import com.google.devtools.build.xcode.xcodegen.proto.XcodeGenProtos;
 import com.google.devtools.build.xcode.xcodegen.proto.XcodeGenProtos.XcodeprojBuildSetting;
-
 import java.io.InputStream;
 import java.util.List;
 
@@ -272,10 +271,10 @@ public final class XcodeSupport {
       this.project = project;
       this.pbxproj = pbxproj;
       this.workspaceRoot = objcConfiguration.getXcodeWorkspaceRoot();
-      this.appleCpus = appleConfiguration.getMultiArchitectures(PlatformType.IOS);
-      this.minimumOs = objcConfiguration.getMinimumOs().toString();
-      this.generateDebugSymbols =
-          objcConfiguration.generateDebugSymbols() || objcConfiguration.generateDsym();
+      this.appleCpus = appleConfiguration.getMultiArchitectures(
+          appleConfiguration.getSingleArchPlatform().getType());
+      this.minimumOs = appleConfiguration.getMinimumOsForPlatformType(PlatformType.IOS).toString();
+      this.generateDebugSymbols = objcConfiguration.generateDsym();
     }
 
     @Override

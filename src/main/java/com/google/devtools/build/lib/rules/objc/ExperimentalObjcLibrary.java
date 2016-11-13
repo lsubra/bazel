@@ -14,170 +14,83 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Sets;
+import static com.google.devtools.build.lib.rules.objc.XcodeProductType.LIBRARY_STATIC;
+
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.TransitiveInfoProviderMap;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
-import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
-import com.google.devtools.build.lib.rules.cpp.CcLibraryHelper;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.Variables.Builder;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.Variables.ValueSequence;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.Variables.VariablesExtension;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainProvider;
-import com.google.devtools.build.lib.rules.cpp.CppRuleClasses;
-import com.google.devtools.build.lib.rules.cpp.PrecompiledFiles;
+import com.google.devtools.build.lib.rules.objc.ObjcCommon.ResourceAttributes;
+import com.google.devtools.build.lib.syntax.Type;
 
-import java.util.Collection;
-
-/**
- * Implementation for experimental_objc_library.
- */
+/** Implementation for experimental_objc_library. */
 public class ExperimentalObjcLibrary implements RuleConfiguredTargetFactory {
 
-  private static final String PCH_FILE_VARIABLE_NAME = "pch_file";
-  private static final String FRAMEWORKS_VARIABLE_NAME = "framework_paths";
-  private static final String MODULES_MAPS_DIR_NAME = "module_maps_dir";
-  private static final String OBJC_MODULE_CACHE_DIR_NAME = "_objc_module_cache";
-  private static final String OBJC_MODULE_CACHE_KEY = "modules_cache_path";
-  private static final String OBJC_MODULE_FEATURE_NAME = "use_objc_modules";
-  private static final Iterable<String> ACTIVATED_ACTIONS =
-      ImmutableList.of("objc-compile", "objc++-compile");
-
-  /**
-   * Build variable extensions for templating a toolchain for objc builds.
-   */
-  private static class ObjcVariablesExtension implements VariablesExtension {
-
-    private final RuleContext ruleContext;
-    private final ObjcProvider objcProvider;
-
-    public ObjcVariablesExtension(RuleContext ruleContext, ObjcProvider objcProvider) {
-      this.ruleContext = ruleContext;
-      this.objcProvider = objcProvider;
-    }
-
-    @Override
-    public void addVariables(Builder builder) {
-      addPchVariables(builder);
-      addFrameworkVariables(builder);
-      if (ObjcCommon.shouldUseObjcModules(ruleContext)) {
-        addModuleMapVariables(builder);
-      }
-    }
-
-    private void addPchVariables(Builder builder) {
-       if (ruleContext.getPrerequisiteArtifact("pch", Mode.TARGET) != null) {
-        builder.addVariable(
-            PCH_FILE_VARIABLE_NAME,
-            ruleContext.getPrerequisiteArtifact("pch", Mode.TARGET).getExecPathString());
-      }
-    }
-
-    private void addFrameworkVariables(Builder builder) {
-       ValueSequence.Builder frameworkSequence = new ValueSequence.Builder();
-      for (String framework :
-          CompilationSupport.commonFrameworkNames(
-              objcProvider, ruleContext.getFragment(AppleConfiguration.class))) {
-        frameworkSequence.addValue(framework);
-      }
-      builder.addSequence(FRAMEWORKS_VARIABLE_NAME, frameworkSequence.build());
-    }
-
-    private void addModuleMapVariables(Builder builder) {
-      builder.addVariable(
-          MODULES_MAPS_DIR_NAME,
-          ObjcRuleClasses.intermediateArtifacts(ruleContext)
-              .moduleMap()
-              .getArtifact()
-              .getExecPath()
-              .getParentDirectory()
-              .toString());
-      builder.addVariable(
-          OBJC_MODULE_CACHE_KEY,
-          ruleContext.getConfiguration().getGenfilesFragment() + "/" + OBJC_MODULE_CACHE_DIR_NAME);
-    }
-  }
-
   @Override
-  public ConfiguredTarget create(RuleContext ruleContext)
+  public ConfiguredTarget create(RuleContext ruleContext) 
+    throws InterruptedException, RuleErrorException {
+    return configureExperimentalObjcLibrary(ruleContext);
+  }
+  
+  /**
+   * Returns a configured target using the given context as an experimental_objc_library.
+   * 
+   * <p>Implemented outside of {@link RuleClass.ConfiguredTargetFactory#create} so as to allow
+   * experimental analysis of objc_library targets as experimental_objc_library.
+   */
+  public static ConfiguredTarget configureExperimentalObjcLibrary(RuleContext ruleContext)
       throws InterruptedException, RuleErrorException {
     validateAttributes(ruleContext);
 
     CompilationArtifacts compilationArtifacts =
         CompilationSupport.compilationArtifacts(ruleContext);
-    CompilationAttributes compilationAttributes =
-        CompilationAttributes.Builder.fromRuleContext(ruleContext).build();
-    PrecompiledFiles precompiledFiles = new PrecompiledFiles(ruleContext);
+    CompilationSupport compilationSupport = new CompilationSupport(ruleContext);
 
-    ObjcCommon common = common(ruleContext, compilationAttributes, compilationArtifacts);
+    ObjcCommon common = common(ruleContext);
 
-    Collection<Artifact> sources = Sets.newHashSet(compilationArtifacts.getSrcs());
-    Collection<Artifact> privateHdrs = Sets.newHashSet(compilationArtifacts.getPrivateHdrs());
-    Collection<Artifact> publicHdrs = Sets.newHashSet(compilationAttributes.hdrs());
+    CrosstoolSupport crosstoolSupport = new CrosstoolSupport(ruleContext, common.getObjcProvider());
 
-    CcLibraryHelper helper =
-        new CcLibraryHelper(
-                ruleContext,
-                new ObjcCppSemantics(common.getObjcProvider()),
-                getFeatureConfiguration(ruleContext),
-                CcLibraryHelper.SourceCategory.CC_AND_OBJC)
-            .addSources(sources)
-            .addSources(privateHdrs)
-            .enableCompileProviders()
-            .addPublicHeaders(publicHdrs)
-            .addPrecompiledFiles(precompiledFiles)
-            .addDeps(ruleContext.getPrerequisites("deps", Mode.TARGET))
-            .addVariableExtension(
-                new ObjcVariablesExtension(ruleContext, common.getObjcProvider()));
-
-    if (ObjcCommon.shouldUseObjcModules(ruleContext)) {
-      helper.setCppModuleMap(ObjcRuleClasses.intermediateArtifacts(ruleContext).moduleMap());
+    TransitiveInfoProviderMap compilationProviders;
+    if (compilationArtifacts.getArchive().isPresent()) {
+      compilationProviders = crosstoolSupport.registerCompileAndArchiveActions(common);
+    } else {
+      compilationProviders = crosstoolSupport.registerCompileActions(common);
     }
-
-    CcLibraryHelper.Info info = helper.build();
-
+    
+    crosstoolSupport.registerFullyLinkAction(common);
+    
     NestedSetBuilder<Artifact> filesToBuild =
         NestedSetBuilder.<Artifact>stableOrder().addAll(common.getCompiledArchive().asSet());
 
+    XcodeProvider.Builder xcodeProviderBuilder = new XcodeProvider.Builder();
+    compilationSupport.addXcodeSettings(xcodeProviderBuilder, common);
+    
+    new ResourceSupport(ruleContext)
+        .validateAttributes()
+        .addXcodeSettings(xcodeProviderBuilder);
+    
+    new XcodeSupport(ruleContext)
+        .addFilesToBuild(filesToBuild)
+        .addXcodeSettings(xcodeProviderBuilder, common.getObjcProvider(), LIBRARY_STATIC)
+        .addDependencies(xcodeProviderBuilder, new Attribute("bundles", Mode.TARGET))
+        .addDependencies(xcodeProviderBuilder, new Attribute("deps", Mode.TARGET))
+        .addNonPropagatedDependencies(
+            xcodeProviderBuilder, new Attribute("non_propagated_deps", Mode.TARGET))
+        .registerActions(xcodeProviderBuilder.build());
+
     return ObjcRuleClasses.ruleConfiguredTarget(ruleContext, filesToBuild.build())
-        .addProviders(info.getProviders())
+        .addProvider(ObjcProvider.class, common.getObjcProvider())
+        .addProviders(compilationProviders)
+        .addProvider(ObjcProvider.class, common.getObjcProvider())
+        .addProvider(XcodeProvider.class, xcodeProviderBuilder.build())
         .build();
   }
 
-  private FeatureConfiguration getFeatureConfiguration(RuleContext ruleContext) {
-    CcToolchainProvider toolchain =
-        ruleContext
-            .getPrerequisite(":cc_toolchain", Mode.TARGET)
-            .getProvider(CcToolchainProvider.class);
-
-    ImmutableList.Builder<String> activatedCrosstoolSelectables =
-        ImmutableList.<String>builder().addAll(ACTIVATED_ACTIONS);
-
-    if (ruleContext.getPrerequisiteArtifact("pch", Mode.TARGET) != null) {
-      activatedCrosstoolSelectables.add("pch");
-    }
-
-    if (ObjcCommon.shouldUseObjcModules(ruleContext)) {
-      activatedCrosstoolSelectables.add(OBJC_MODULE_FEATURE_NAME);
-    }
-    
-    // We create a module map by default to allow for swift interop.
-    activatedCrosstoolSelectables.add(CppRuleClasses.MODULE_MAPS);
-    activatedCrosstoolSelectables.add(CppRuleClasses.COMPILE_ACTION_FLAGS_IN_FLAG_SET);
-    activatedCrosstoolSelectables.add(CppRuleClasses.DEPENDENCY_FILE);
-
-    return toolchain.getFeatures().getFeatureConfiguration(activatedCrosstoolSelectables.build());
-  }
-
-  /**
-   * Throws errors or warnings for bad attribute state.
-   */
-  private void validateAttributes(RuleContext ruleContext) {
+  /** Throws errors or warnings for bad attribute state. */
+  private static void validateAttributes(RuleContext ruleContext) {
     for (String copt : ObjcCommon.getNonCrosstoolCopts(ruleContext)) {
       if (copt.contains("-fmodules-cache-path")) {
         ruleContext.ruleWarning(CompilationSupport.MODULES_CACHE_PATH_WARNING);
@@ -185,14 +98,25 @@ public class ExperimentalObjcLibrary implements RuleConfiguredTargetFactory {
     }
   }
 
-  private static ObjcCommon common(
-      RuleContext ruleContext,
-      CompilationAttributes compilationAttributes,
-      CompilationArtifacts compilationArtifacts) {
+  /**
+   * Constructs an {@link ObjcCommon} instance based on the attributes of the given rule context.
+   */
+  private static ObjcCommon common(RuleContext ruleContext) {
     return new ObjcCommon.Builder(ruleContext)
-        .setCompilationAttributes(compilationAttributes)
-        .setCompilationArtifacts(compilationArtifacts)
-        .addDepObjcProviders(ruleContext.getPrerequisites("deps", Mode.TARGET, ObjcProvider.class))
+        .setCompilationAttributes(
+            CompilationAttributes.Builder.fromRuleContext(ruleContext).build())
+        .setResourceAttributes(new ResourceAttributes(ruleContext))
+        .addDefines(ruleContext.getTokenizedStringListAttr("defines"))
+        .setCompilationArtifacts(CompilationSupport.compilationArtifacts(ruleContext))
+        .addDeps(ruleContext.getPrerequisites("deps", Mode.TARGET))
+        .addRuntimeDeps(ruleContext.getPrerequisites("runtime_deps", Mode.TARGET))
+        .addDepObjcProviders(
+            ruleContext.getPrerequisites("bundles", Mode.TARGET, ObjcProvider.class))
+        .addNonPropagatedDepObjcProviders(
+            ruleContext.getPrerequisites("non_propagated_deps", Mode.TARGET, ObjcProvider.class))
+        .setIntermediateArtifacts(ObjcRuleClasses.intermediateArtifacts(ruleContext))
+        .setAlwayslink(ruleContext.attributes().get("alwayslink", Type.BOOLEAN))
+        .setHasModuleMap()
         .build();
   }
 }

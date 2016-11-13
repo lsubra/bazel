@@ -18,6 +18,7 @@ import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
@@ -32,7 +33,7 @@ import com.google.devtools.build.lib.actions.Executor;
 import com.google.devtools.build.lib.actions.Root;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnActionContext;
-import com.google.devtools.build.lib.actions.cache.Digest;
+import com.google.devtools.build.lib.actions.cache.Md5Digest;
 import com.google.devtools.build.lib.actions.cache.Metadata;
 import com.google.devtools.build.lib.actions.cache.MetadataHandler;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
@@ -43,15 +44,13 @@ import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.exec.util.TestExecutorBuilder;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 /** Tests {@link PopulateTreeArtifactAction}. */
 @RunWith(JUnit4.class)
@@ -69,6 +68,11 @@ public class PopulateTreeArtifactActionTest extends BuildViewTestCase {
     }
 
     @Override
+    public Iterable<TreeFileArtifact> getExpandedOutputs(Artifact artifact) {
+      throw new UnsupportedOperationException(artifact.prettyPrint());
+    }
+
+    @Override
     public Metadata getMetadataMaybe(Artifact artifact) {
       throw new UnsupportedOperationException(artifact.prettyPrint());
     }
@@ -79,8 +83,8 @@ public class PopulateTreeArtifactActionTest extends BuildViewTestCase {
     }
 
     @Override
-    public void setDigestForVirtualArtifact(Artifact artifact, Digest digest) {
-      throw new UnsupportedOperationException(artifact.prettyPrint() + ": " + digest);
+    public void setDigestForVirtualArtifact(Artifact artifact, Md5Digest md5Digest) {
+      throw new UnsupportedOperationException(artifact.prettyPrint() + ": " + md5Digest);
     }
 
     @Override
@@ -91,11 +95,6 @@ public class PopulateTreeArtifactActionTest extends BuildViewTestCase {
     @Override
     public void markOmitted(ActionInput output) {
       throw new UnsupportedOperationException(output.toString());
-    }
-
-    @Override
-    public boolean artifactExists(Artifact artifact) {
-      throw new UnsupportedOperationException(artifact.prettyPrint());
     }
 
     @Override
@@ -224,6 +223,40 @@ public class PopulateTreeArtifactActionTest extends BuildViewTestCase {
   }
 
   @Test
+  public void testEmptyTreeArtifactInputAndOutput() throws Exception {
+    Action action = createPopulateTreeArtifactAction();
+    scratch.overwriteFile("archiveManifest.txt", "");
+
+    ArrayList<Artifact> treeFileArtifacts = new ArrayList<Artifact>();
+    ActionExecutionContext executionContext = actionExecutionContext(treeFileArtifacts);
+
+    action.execute(executionContext);
+
+    assertThat(treeFileArtifacts).isEmpty();
+  }
+
+  @Test
+  public void testOutputTreeFileArtifactDirsCreated() throws Exception {
+    Action action = createPopulateTreeArtifactAction();
+    scratch.overwriteFile(
+        "archiveManifest.txt",
+        "archive_members/dirA/memberA",
+        "archive_members/dirB/memberB");
+
+    ArrayList<Artifact> treeFileArtifacts = new ArrayList<Artifact>();
+    ActionExecutionContext executionContext = actionExecutionContext(treeFileArtifacts);
+    action.execute(executionContext);
+
+    // We check whether the parent directory structures of output TreeFileArtifacts exist even
+    // though the spawn is not executed (the SpawnActionContext is mocked out).
+    assertThat(treeFileArtifacts).hasSize(2);
+    for (Artifact treeFileArtifact : treeFileArtifacts) {
+      assertThat(treeFileArtifact.getPath().getParentDirectory().exists()).isTrue();
+      assertThat(treeFileArtifact.getPath().exists()).isFalse();
+    }
+  }
+
+  @Test
   public void testComputeKey() throws Exception {
     final Artifact archiveA = getSourceArtifact("myArchiveA.zip");
     final Artifact archiveB = getSourceArtifact("myArchiveB.zip");
@@ -283,7 +316,12 @@ public class PopulateTreeArtifactActionTest extends BuildViewTestCase {
         .build();
 
     return new ActionExecutionContext(
-        executor, null, new TestMetadataHandler(storingExpandedTreeFileArtifacts), null, null);
+        executor,
+        null,
+        new TestMetadataHandler(storingExpandedTreeFileArtifacts),
+        null,
+        ImmutableMap.<String, String>of(),
+        null);
   }
 
   private Artifact createTreeArtifact(String rootRelativePath) {

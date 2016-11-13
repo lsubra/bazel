@@ -14,21 +14,13 @@
 
 package com.google.testing.junit.runner.model;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
-
-import com.google.common.base.Optional;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-
-import org.joda.time.Interval;
-
+import com.google.testing.junit.runner.util.TestIntegration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import javax.annotation.Nullable;
 
-/**
- * Result of executing a test suite or test case.
- */
+/** Result of executing a test suite or test case. */
 final class TestResult {
 
   /**
@@ -36,7 +28,7 @@ final class TestResult {
    */
   enum Status {
     /**
-     * Test case was not run because the test decided that it should not be run 
+     * Test case was not run because the test decided that it should not be run
      * (e.g.: due to a failed assumption in a JUnit4-style tests).
      */
     SKIPPED(false),
@@ -48,25 +40,25 @@ final class TestResult {
     FILTERED(false),
 
     /**
-     * Test case was not run because the test was labeled in the code as suppressed 
+     * Test case was not run because the test was labeled in the code as suppressed
      * (e.g.: the test was annotated with {@code @Suppress} or {@code @Ignore}).
      */
     SUPPRESSED(false),
 
     /**
-     * Test case was not started because the test harness run was interrupted by a 
+     * Test case was not started because the test harness run was interrupted by a
      * signal or timed out.
      */
     CANCELLED(false),
 
     /**
-     * Test case was started but not finished because the test harness run was interrupted by a 
+     * Test case was started but not finished because the test harness run was interrupted by a
      * signal or timed out.
      */
     INTERRUPTED(true),
 
     /**
-     * Test case was run and completed (possibly failing or throwing an exception, but not 
+     * Test case was run and completed (possibly failing or throwing an exception, but not
      * interrupted).
      */
     COMPLETED(true);
@@ -78,7 +70,7 @@ final class TestResult {
     }
 
     /**
-     * Equivalent semantic value to wasRun {@code status="run|notrun"} on 
+     * Equivalent semantic value to wasRun {@code status="run|notrun"} on
      * the XML schema.
      */
     public boolean wasRun() {
@@ -86,24 +78,28 @@ final class TestResult {
     }
   }
 
-  private final String name, className;
-  private final ImmutableMap<String, String> properties;
-  private final ImmutableList<Throwable> failures;
-  private final Optional<Interval> runTime;
+  private final String name;
+  private final String className;
+  private final Map<String, String> properties;
+  private final List<Throwable> failures;
+  @Nullable private final TestInterval runTime;
+  private final Set<TestIntegration> integrations;
   private final Status status;
-  private final int numTests, numFailures;
-  private final ImmutableList<TestResult> childResults;
+  private final int numTests;
+  private final int numFailures;
+  private final List<TestResult> childResults;
 
   private TestResult(Builder builder) {
     name = checkNotNull(builder.name, "name not set");
     className = checkNotNull(builder.className, "className not set");
     properties = checkNotNull(builder.properties, "properties not set");
     failures = checkNotNull(builder.failures, "failures not set");
-    runTime = checkNotNull(builder.runTime, "runTime not set");
+    runTime = builder.runTime;
     status = checkNotNull(builder.status, "status not set");
     numTests = checkNotNull(builder.numTests, "numTests not set");
     numFailures = checkNotNull(builder.numFailures, "numFailures not set");
     childResults = checkNotNull(builder.childResults, "childResults not set");
+    integrations = checkNotNull(builder.integrations, "integrations not set");
   }
 
   String getName() {
@@ -114,15 +110,20 @@ final class TestResult {
     return className;
   }
 
-  ImmutableMap<String, String> getProperties() {
+  Map<String, String> getProperties() {
     return properties;
   }
 
-  ImmutableList<Throwable> getFailures() {
+  List<Throwable> getFailures() {
     return failures;
   }
 
-  Optional<Interval> getRunTimeInterval() {
+  Set<TestIntegration> getIntegrations() {
+    return integrations;
+  }
+
+  @Nullable
+  TestInterval getRunTimeInterval() {
     return runTime;
   }
 
@@ -142,20 +143,28 @@ final class TestResult {
     return numFailures;
   }
 
-  ImmutableList<TestResult> getChildResults() {
+  List<TestResult> getChildResults() {
     return childResults;
+  }
+
+  private static <T> T checkNotNull(T reference, String errorMessage) {
+    if (reference == null) {
+      throw new NullPointerException(errorMessage);
+    }
+    return reference;
   }
 
   static final class Builder {
     private String name = null;
     private String className = null;
-    private ImmutableMap<String, String> properties = null;
-    private ImmutableList<Throwable> failures = null;
-    private Optional<Interval> runTime = null;
+    private Map<String, String> properties = null;
+    private List<Throwable> failures = null;
+    @Nullable private TestInterval runTime = null;
+    private Set<TestIntegration> integrations = null;
     private Status status = null;
     private Integer numTests = null;
     private Integer numFailures = null;
-    private ImmutableList<TestResult> childResults = null;
+    private List<TestResult> childResults = null;
 
     Builder() {}
 
@@ -170,19 +179,25 @@ final class TestResult {
     }
 
     Builder properties(Map<String, String> properties) {
-      this.properties = ImmutableMap.copyOf(
-          checkNullToNotNull(this.properties, properties, "properties"));
+      this.properties = checkNullToNotNull(this.properties, properties, "properties");
+      return this;
+    }
+
+    Builder integrations(Set<TestIntegration> integrations) {
+      this.integrations = checkNullToNotNull(this.integrations, integrations, "integrations");
       return this;
     }
 
     Builder failures(List<Throwable> failures) {
-      this.failures = ImmutableList.copyOf(
-          checkNullToNotNull(this.failures, failures, "failures"));
+      this.failures = checkNullToNotNull(this.failures, failures, "failures");
       return this;
     }
 
-    Builder runTimeInterval(Optional<Interval> runTime) {
-      this.runTime = checkNullToNotNull(this.runTime, runTime, "runTime");
+    Builder runTimeInterval(@Nullable TestInterval runTime) {
+      if (this.runTime != null) {
+        throw new IllegalStateException("runTime already set");
+      }
+      this.runTime = runTime;
       return this;
     }
 
@@ -202,8 +217,7 @@ final class TestResult {
     }
 
     Builder childResults(List<TestResult> childResults) {
-      this.childResults = ImmutableList.copyOf(
-          checkNullToNotNull(this.childResults, childResults, "childResults"));
+      this.childResults = checkNullToNotNull(this.childResults, childResults, "childResults");
       return this;
     }
 
@@ -212,7 +226,9 @@ final class TestResult {
     }
 
     private static <T> T checkNullToNotNull(T currValue, T newValue, String desc) {
-      checkState(currValue == null, desc + " already set");
+      if (currValue != null) {
+        throw new IllegalStateException(desc + " already set");
+      }
       return checkNotNull(newValue, desc + " is null");
     }
   }

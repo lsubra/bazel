@@ -33,10 +33,12 @@ import java.util.List;
 public class ResourceShrinkerActionBuilder {
   private Artifact resourceFilesZip;
   private Artifact shrunkJar;
+  private Artifact proguardMapping;
   private ResourceContainer primaryResources;
   private ResourceDependencies dependencyResources;
   private Artifact resourceApkOut;
   private Artifact shrunkResourcesOut;
+  private Artifact logOut;
 
   private final RuleContext ruleContext;
   private final SpawnAction.Builder spawnActionBuilder;
@@ -88,6 +90,14 @@ public class ResourceShrinkerActionBuilder {
   }
 
   /**
+   * @param proguardMapping The Proguard mapping between obfuscated and original code.
+   */
+  public ResourceShrinkerActionBuilder withProguardMapping(Artifact proguardMapping) {
+    this.proguardMapping = proguardMapping;
+    return this;
+  }
+
+  /**
    * @param primary The fully processed {@link ResourceContainer} of the resources to be shrunk.
    *     Must contain both an R.txt and merged manifest.
    */
@@ -120,6 +130,14 @@ public class ResourceShrinkerActionBuilder {
    */
   public ResourceShrinkerActionBuilder setShrunkResourcesOut(Artifact shrunkResourcesOut) {
     this.shrunkResourcesOut = shrunkResourcesOut;
+    return this;
+  }
+
+  /**
+   * @param logOut The location to write the shrinker log.
+   */
+  public ResourceShrinkerActionBuilder setLogOut(Artifact logOut) {
+    this.logOut = logOut;
     return this;
   }
 
@@ -165,6 +183,11 @@ public class ResourceShrinkerActionBuilder {
     commandLine.addExecPath("--shrunkJar", shrunkJar);
     inputs.add(shrunkJar);
 
+    if (proguardMapping != null) {
+      commandLine.addExecPath("--proguardMapping", proguardMapping);
+      inputs.add(proguardMapping);
+    }
+
     commandLine.addExecPath("--rTxt", primaryResources.getRTxt());
     inputs.add(primaryResources.getRTxt());
 
@@ -184,6 +207,9 @@ public class ResourceShrinkerActionBuilder {
     commandLine.addExecPath("--shrunkResources", shrunkResourcesOut);
     outputs.add(shrunkResourcesOut);
 
+    commandLine.addExecPath("--log", logOut);
+    outputs.add(logOut);
+
     ruleContext.registerAction(spawnActionBuilder
         .addTool(sdk.getAapt())
         .addInputs(inputs.build())
@@ -191,7 +217,7 @@ public class ResourceShrinkerActionBuilder {
         .setCommandLine(commandLine.build())
         .setExecutable(ruleContext.getExecutablePrerequisite(
             "$android_resource_shrinker", Mode.HOST))
-        .setProgressMessage("Shrinking resources")
+        .setProgressMessage("Shrinking resources for " + ruleContext.getLabel())
         .setMnemonic("ResourceShrinker")
         .build(ruleContext));
 

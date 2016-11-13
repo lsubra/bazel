@@ -19,7 +19,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -64,6 +63,7 @@ import com.google.devtools.build.lib.skyframe.BuildInfoCollectionValue.BuildInfo
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.ConfiguredValueCreationException;
 import com.google.devtools.build.lib.skyframe.SkyframeActionExecutor.ConflictException;
 import com.google.devtools.build.lib.skyframe.SkylarkImportLookupFunction.SkylarkImportFailedException;
+import com.google.devtools.build.lib.util.OrderedSetMultimap;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.CycleInfo;
@@ -73,13 +73,11 @@ import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
-
 import javax.annotation.Nullable;
 
 /**
@@ -99,8 +97,8 @@ public final class SkyframeBuildView {
   // This hack allows us to see when a configured target has been invalidated, and thus when the set
   // of artifact conflicts needs to be recomputed (whenever a configured target has been invalidated
   // or newly evaluated).
-  private final EvaluationProgressReceiver invalidationReceiver =
-      new ConfiguredTargetValueInvalidationReceiver();
+  private final EvaluationProgressReceiver progressReceiver =
+      new ConfiguredTargetValueProgressReceiver();
   private final Set<SkyKey> evaluatedConfiguredTargets = Sets.newConcurrentHashSet();
   // Used to see if checks of graph consistency need to be done after analysis.
   private volatile boolean someConfiguredTargetEvaluated = false;
@@ -131,7 +129,8 @@ public final class SkyframeBuildView {
       SkyframeExecutor skyframeExecutor, BinTools binTools,
       ConfiguredRuleClassProvider ruleClassProvider) {
     this.factory = new ConfiguredTargetFactory(ruleClassProvider);
-    this.artifactFactory = new ArtifactFactory(directories.getExecRoot());
+    this.artifactFactory = new ArtifactFactory(
+        directories.getExecRoot().getParentDirectory(), directories.getRelativeOutputPath());
     this.skyframeExecutor = skyframeExecutor;
     this.binTools = binTools;
     this.ruleClassProvider = ruleClassProvider;
@@ -430,7 +429,8 @@ public final class SkyframeBuildView {
    */
   // TODO(bazel-team): Allow analysis to return null so the value builder can exit and wait for a
   // restart deps are not present.
-  private boolean getWorkspaceStatusValues(Environment env, BuildConfiguration config) {
+  private static boolean getWorkspaceStatusValues(Environment env, BuildConfiguration config)
+      throws InterruptedException {
     env.getValue(WorkspaceStatusValue.SKY_KEY);
     Map<BuildInfoKey, BuildInfoFactory> buildInfoFactories =
         PrecomputedValue.BUILD_INFO_FACTORIES.get(env);
@@ -451,9 +451,13 @@ public final class SkyframeBuildView {
 
   /** Returns null if any build-info values are not ready. */
   @Nullable
-  CachingAnalysisEnvironment createAnalysisEnvironment(ArtifactOwner owner,
-      boolean isSystemEnv, EventHandler eventHandler,
-      Environment env, BuildConfiguration config) {
+  CachingAnalysisEnvironment createAnalysisEnvironment(
+      ArtifactOwner owner,
+      boolean isSystemEnv,
+      EventHandler eventHandler,
+      Environment env,
+      BuildConfiguration config)
+      throws InterruptedException {
     if (config != null && !getWorkspaceStatusValues(env, config)) {
       return null;
     }
@@ -474,7 +478,7 @@ public final class SkyframeBuildView {
   @Nullable
   ConfiguredTarget createConfiguredTarget(Target target, BuildConfiguration configuration,
       CachingAnalysisEnvironment analysisEnvironment,
-      ListMultimap<Attribute, ConfiguredTarget> prerequisiteMap,
+      OrderedSetMultimap<Attribute, ConfiguredTarget> prerequisiteMap,
       ImmutableMap<Label, ConfigMatchingProvider> configConditions) throws InterruptedException {
     Preconditions.checkState(enableAnalysis,
         "Already in execution phase %s %s", target, configuration);
@@ -513,7 +517,10 @@ public final class SkyframeBuildView {
     // trims a host configuration to the same scope as a target configuration. Since their options
     // are different, the host instance may actually be able to produce the fragment. So it's
     // wrong and potentially dangerous to unilaterally exclude it.
-    Set<Class<? extends BuildConfiguration.Fragment>> fragmentClasses = config.fragmentClasses();
+    Set<Class<? extends BuildConfiguration.Fragment>> fragmentClasses =
+        config.trimConfigurations()
+            ? config.fragmentClasses()
+            : ((ConfiguredRuleClassProvider) ruleClassProvider).getAllFragments();
     BuildConfiguration hostConfig = hostConfigurationCache.get(fragmentClasses);
     if (hostConfig != null) {
       return hostConfig;
@@ -541,8 +548,8 @@ public final class SkyframeBuildView {
    * Hack to invalidate actions in legacy action graph when their values are invalidated in
    * skyframe.
    */
-  EvaluationProgressReceiver getInvalidationReceiver() {
-    return invalidationReceiver;
+  EvaluationProgressReceiver getProgressReceiver() {
+    return progressReceiver;
   }
 
   /** Clear the invalidated configured targets detected during loading and analysis phases. */
@@ -585,7 +592,7 @@ public final class SkyframeBuildView {
     this.enableAnalysis = enable;
   }
 
-  private class ConfiguredTargetValueInvalidationReceiver implements EvaluationProgressReceiver {
+  private class ConfiguredTargetValueProgressReceiver implements EvaluationProgressReceiver {
     @Override
     public void invalidated(SkyKey skyKey, InvalidationState state) {
       if (skyKey.functionName().equals(SkyFunctions.CONFIGURED_TARGET)) {

@@ -36,7 +36,6 @@ filegroup(
 cc_binary(
     name = "libunix.so",
     srcs = [
-        "localsocket.cc",
         "macros.h",
         "process.cc",
         "unix_jni.cc",
@@ -63,6 +62,19 @@ cc_binary(
     ],
 )
 
+genrule(
+    name = "windows_jni",
+    srcs = glob([
+        "windows_*.cc",
+        "windows_*.h",
+    ]),
+    outs = ["windows_jni.dll"],
+    cmd = "$(location build_windows_jni.sh) $@ $(SRCS)",
+    output_to_bindir = 1,
+    tools = ["build_windows_jni.sh"],
+    visibility = ["//src:__subpackages__"],
+)
+
 # TODO(bazel-team): Come up with a way to support platform-specific dynamic
 # library extensions.  This is issue #914.
 genrule(
@@ -70,6 +82,7 @@ genrule(
     srcs = ["libunix.so"],
     outs = ["libunix.dylib"],
     cmd = "cp $< $@",
+    output_to_bindir = 1,
     visibility = ["//src:__subpackages__"],
 )
 

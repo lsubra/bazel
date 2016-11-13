@@ -48,13 +48,11 @@ import com.google.devtools.build.lib.syntax.Runtime;
 import com.google.devtools.build.lib.syntax.SkylarkList;
 import com.google.devtools.build.lib.syntax.SkylarkSignatureProcessor;
 import com.google.devtools.build.lib.vfs.Path;
-
 import java.io.File;
-import java.io.IOException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import javax.annotation.Nullable;
 
 /**
@@ -139,16 +137,16 @@ public class WorkspaceFactory {
   /**
    * Parses the given WORKSPACE file without resolving skylark imports.
    *
-   * <p>Called by com.google.devtools.build.workspace.Resolver from
-   * //src/tools/generate_workspace.</p>
+   * <p>Called by com.google.devtools.build.workspace.Resolver from //src/tools/generate_workspace.
    */
-  public void parse(ParserInputSource source) throws InterruptedException, IOException {
+  public void parse(ParserInputSource source)
+      throws BuildFileContainsErrorsException, InterruptedException {
     parse(source, null);
   }
 
   @VisibleForTesting
   public void parse(ParserInputSource source, @Nullable StoredEventHandler localReporter)
-      throws InterruptedException, IOException {
+      throws BuildFileContainsErrorsException, InterruptedException {
     // This method is split in 2 so WorkspaceFileFunction can call the two parts separately and
     // do the Skylark load imports in between. We can't load skylark imports from
     // generate_workspace at the moment because it doesn't have access to skyframe, but that's okay
@@ -156,9 +154,10 @@ public class WorkspaceFactory {
     if (localReporter == null) {
       localReporter = new StoredEventHandler();
     }
-    BuildFileAST buildFileAST = BuildFileAST.parseBuildFile(source, localReporter, false);
+    BuildFileAST buildFileAST = BuildFileAST.parseBuildFile(source, localReporter);
     if (buildFileAST.containsErrors()) {
-      throw new IOException("Failed to parse " + source.getPath());
+      throw new BuildFileContainsErrorsException(
+          Label.EXTERNAL_PACKAGE_IDENTIFIER, "Failed to parse " + source.getPath());
     }
     execute(buildFileAST, null, localReporter);
   }
@@ -179,15 +178,14 @@ public class WorkspaceFactory {
   private void execute(BuildFileAST ast, @Nullable Map<String, Extension> importedExtensions,
       StoredEventHandler localReporter)
       throws InterruptedException {
-    Environment.Builder environmentBuilder = Environment.builder(mutability)
-        .setGlobals(Environment.BUILD)
-        .setEventHandler(localReporter);
+    Environment.Builder environmentBuilder =
+        Environment.builder(mutability)
+            .setGlobals(Environment.DEFAULT_GLOBALS)
+            .setEventHandler(localReporter);
     if (importedExtensions != null) {
-      importMap =
-          ImmutableMap.<String, Extension>builder()
-              .putAll(parentImportMap)
-              .putAll(importedExtensions)
-              .build();
+      Map<String, Extension> map = new HashMap<String, Extension>(parentImportMap);
+      map.putAll(importedExtensions);
+      importMap = ImmutableMap.<String, Extension>copyOf(importedExtensions);
     } else {
       importMap = parentImportMap;
     }
@@ -287,7 +285,7 @@ public class WorkspaceFactory {
             + "description of the project, using underscores as separators, e.g., "
             + "github.com/bazelbuild/bazel should use com_github_bazelbuild_bazel. Names must "
             + "start with a letter and can only contain letters, numbers, and underscores.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "name", type = String.class, doc = "the name of the workspace.")
     },
     documented = true,
@@ -456,7 +454,8 @@ public class WorkspaceFactory {
     }
 
     builder.put("bazel_version", version);
-    return new ClassObject.SkylarkClassObject(builder.build(), "no native function or rule '%s'");
+    return SkylarkClassObjectConstructor.STRUCT.create(
+        builder.build(), "no native function or rule '%s'");
   }
 
   public static ClassObject newNativeModule(RuleClassProvider ruleClassProvider, String version) {

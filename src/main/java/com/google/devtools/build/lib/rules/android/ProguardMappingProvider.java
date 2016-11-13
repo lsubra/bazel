@@ -13,23 +13,24 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.android;
 
+import com.google.auto.value.AutoValue;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 
-/**
- * A target that can provide a proguard obfuscation mapping to Android binaries or tests.
- */
+/** A target that can provide a proguard obfuscation mapping to Android binaries or tests. */
+@AutoValue
 @Immutable
-public final class ProguardMappingProvider implements TransitiveInfoProvider {
+public abstract class ProguardMappingProvider implements TransitiveInfoProvider {
 
-  private final Artifact proguardMapping;
-
-  public ProguardMappingProvider(Artifact proguardMapping) {
-    this.proguardMapping = proguardMapping;
+  public static ProguardMappingProvider create(
+      Artifact proguardMapping, Artifact proguardProtoMapping) {
+    return new AutoValue_ProguardMappingProvider(proguardMapping, proguardProtoMapping);
   }
 
-  public Artifact getProguardMapping() {
-    return proguardMapping;
-  }
+  public abstract Artifact getProguardMapping();
+
+  public abstract Artifact getProguardProtoMapping();
+
+  ProguardMappingProvider() {}
 }

@@ -27,7 +27,6 @@ import com.google.devtools.build.lib.packages.NativeAspectClass;
 import com.google.devtools.build.lib.rules.java.JavaCommon;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider;
 import com.google.devtools.build.lib.rules.java.JavaRuntimeJarProvider;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -68,8 +67,7 @@ public class AndroidNeverlinkAspect extends NativeAspectClass implements Configu
 
     return new ConfiguredAspect.Builder(NAME, ruleContext)
         .addProvider(
-            AndroidNeverLinkLibrariesProvider.class,
-            new AndroidNeverLinkLibrariesProvider(
+            AndroidNeverLinkLibrariesProvider.create(
                 AndroidCommon.collectTransitiveNeverlinkLibraries(
                     ruleContext,
                     deps,

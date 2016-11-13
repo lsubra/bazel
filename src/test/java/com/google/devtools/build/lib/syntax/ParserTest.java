@@ -20,22 +20,19 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Location;
-import com.google.devtools.build.lib.syntax.Argument.Passed;
 import com.google.devtools.build.lib.syntax.DictionaryLiteral.DictionaryEntryLiteral;
+import com.google.devtools.build.lib.syntax.SkylarkImports.SkylarkImportSyntaxException;
 import com.google.devtools.build.lib.syntax.util.EvaluationTestCase;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
+import java.util.LinkedList;
+import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-
-import java.util.LinkedList;
-import java.util.List;
 
 /**
  *  Tests of parser behaviour.
@@ -50,22 +47,14 @@ public class ParserTest extends EvaluationTestCase {
     buildEnvironment = newBuildEnvironment();
   }
 
-  private Parser.ParseResult parseFileWithComments(String... input) {
-    return buildEnvironment.parseFileWithComments(input);
+  private BuildFileAST parseFileWithComments(String... input) {
+    return BuildFileAST.parseBuildString(buildEnvironment.getEventHandler(), input);
   }
 
   /** Parses build code (not Skylark) */
   @Override
   protected List<Statement> parseFile(String... input) {
-    return buildEnvironment.parseFile(input);
-  }
-
-  /** Parses a build code (not Skylark) with PythonProcessing enabled */
-  private List<Statement> parseFileWithPython(String... input) {
-    return Parser.parseFile(
-        ParserInputSource.create(Joiner.on("\n").join(input), null),
-        getEventHandler(),
-        /*parsePython=*/true).statements;
+    return parseFileWithComments(input).getStatements();
   }
 
   /** Parses Skylark code */
@@ -258,17 +247,16 @@ public class ParserTest extends EvaluationTestCase {
 
   @Test
   public void testSubstring() throws Exception {
-    FuncallExpression e = (FuncallExpression) parseExpression("'FOO.CC'[:].lower()[1:]");
-    assertEquals("$slice", e.getFunction().getName());
-    assertThat(e.getArguments()).hasSize(3);
+    SliceExpression s = (SliceExpression) parseExpression("'FOO.CC'[:].lower()[1:]");
+    assertThat(((IntegerLiteral) s.getStart()).value).isEqualTo(1);
 
-    e = (FuncallExpression) parseExpression("'FOO.CC'.lower()[1:].startswith('oo')");
+    FuncallExpression e = (FuncallExpression) parseExpression(
+        "'FOO.CC'.lower()[1:].startswith('oo')");
     assertEquals("startswith", e.getFunction().getName());
     assertThat(e.getArguments()).hasSize(1);
 
-    e = (FuncallExpression) parseExpression("'FOO.CC'[1:][:2]");
-    assertEquals("$slice", e.getFunction().getName());
-    assertThat(e.getArguments()).hasSize(3);
+    s = (SliceExpression) parseExpression("'FOO.CC'[1:][:2]");
+    assertThat(((IntegerLiteral) s.getEnd()).value).isEqualTo(2);
   }
 
   @Test
@@ -287,18 +275,12 @@ public class ParserTest extends EvaluationTestCase {
   }
 
   private void evalSlice(String statement, Object... expectedArgs) {
-    FuncallExpression e = (FuncallExpression) parseExpression(statement);
-    assertEquals("$slice", e.getFunction().getName());
-    List<Passed> actualArgs = e.getArguments();
-    assertThat(actualArgs).hasSize(expectedArgs.length);
-    int pos = 0;
-    for (Passed arg : actualArgs) {
-      // There is no way to evaluate the expression here, so we rely on string comparison.
-      String actualString = arg.getValue().toString();
-      String expectedString = printSliceArg(expectedArgs[pos]);
-      assertThat(actualString).isEqualTo(expectedString);
-      ++pos;
-    }
+    SliceExpression e = (SliceExpression) parseExpression(statement);
+
+    // There is no way to evaluate the expression here, so we rely on string comparison.
+    assertThat(e.getStart().toString()).isEqualTo(printSliceArg(expectedArgs[0]));
+    assertThat(e.getEnd().toString()).isEqualTo(printSliceArg(expectedArgs[1]));
+    assertThat(e.getStep().toString()).isEqualTo(printSliceArg(expectedArgs[2]));
   }
 
   private String printSliceArg(Object arg) {
@@ -419,6 +401,13 @@ public class ParserTest extends EvaluationTestCase {
   }
 
   @Test
+  public void testDel() {
+    setFailFast(false);
+    parseExpression("del d['a']");
+    assertContainsError("'del' not supported, use '.pop()' to delete");
+  }
+
+  @Test
   public void testTupleAssign() {
     List<Statement> statements = parseFile("list[0] = 5; dict['key'] = value\n");
     assertThat(statements).hasSize(2);
@@ -455,6 +444,10 @@ public class ParserTest extends EvaluationTestCase {
   @Test
   public void testPrettyPrintFunctions() throws Exception {
     assertEquals("[x[1:3]\n]", parseFile("x[1:3]").toString());
+    assertEquals("[x[1:3]\n]", parseFile("x[1:3:1]").toString());
+    assertEquals("[x[1:3:2]\n]", parseFile("x[1:3:2]").toString());
+    assertEquals("[x[1::2]\n]", parseFile("x[1::2]").toString());
+    assertEquals("[x[1:]\n]", parseFile("x[1:]").toString());
     assertEquals("[str[42]\n]", parseFile("str[42]").toString());
     assertEquals("[ctx.new_file('hello')\n]", parseFile("ctx.new_file('hello')").toString());
     assertEquals("[new_file('hello')\n]", parseFile("new_file('hello')").toString());
@@ -823,7 +816,7 @@ public class ParserTest extends EvaluationTestCase {
 
   @Test
   public void testParseBuildFileWithComments() throws Exception {
-    Parser.ParseResult result = parseFileWithComments(
+    BuildFileAST result = parseFileWithComments(
       "# Test BUILD file",
       "# with multi-line comment",
       "",
@@ -832,13 +825,13 @@ public class ParserTest extends EvaluationTestCase {
       "   outs = [ 'result.txt',",
       "           'result.log'],",
       "   cmd = 'touch result.txt result.log')");
-    assertThat(result.statements).hasSize(1);
-    assertThat(result.comments).hasSize(2);
+    assertThat(result.getStatements()).hasSize(1);
+    assertThat(result.getComments()).hasSize(2);
   }
 
   @Test
   public void testParseBuildFileWithManyComments() throws Exception {
-    Parser.ParseResult result = parseFileWithComments(
+    BuildFileAST result = parseFileWithComments(
         "# 1",
         "# 2",
         "",
@@ -854,9 +847,9 @@ public class ParserTest extends EvaluationTestCase {
         "           'result.log'], # 13",
         "   cmd = 'touch result.txt result.log')",
         "# 15");
-    assertThat(result.statements).hasSize(1); // Single genrule
+    assertThat(result.getStatements()).hasSize(1); // Single genrule
     StringBuilder commentLines = new StringBuilder();
-    for (Comment comment : result.comments) {
+    for (Comment comment : result.getComments()) {
       // Comments start and end on the same line
       assertEquals(comment.getLocation().getStartLineAndColumn().getLine() + " ends on "
           + comment.getLocation().getEndLineAndColumn().getLine(),
@@ -869,7 +862,7 @@ public class ParserTest extends EvaluationTestCase {
       commentLines.append(") ");
     }
     assertWithMessage("Found: " + commentLines)
-        .that(result.comments.size()).isEqualTo(10); // One per '#'
+        .that(result.getComments().size()).isEqualTo(10); // One per '#'
   }
 
   @Test
@@ -907,82 +900,11 @@ public class ParserTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testFunctionDefinitionIgnoredEvenWithUnsupportedKeyword() throws Exception {
-    // Parser skips over entire function definitions without reporting error,
-    // when parsePython is set to true.
-    List<Statement> stmts = parseFileWithPython(
-        "x = 1;",
-        "def foo(x, y, **z):",
-        "  try:",
-        "    x = 2",
-        "  with: pass",
-        "  return 2",
-        "x = 3");
-    assertThat(stmts).hasSize(2);
-  }
-
-  @Test
-  public void testFunctionDefinitionIgnored() throws Exception {
-    // Parser skips over entire function definitions without reporting error,
-    // when parsePython is set to true.
-    List<Statement> stmts = parseFileWithPython(
-        "x = 1;",
-        "def foo(x, y, **z):",
-        "  # a comment",
-        "  if true:",
-        "    x = 2",
-        "  foo(bar)",
-        "  return z",
-        "x = 3");
-    assertThat(stmts).hasSize(2);
-
-    stmts = parseFileWithPython(
-        "x = 1;",
-        "def foo(x, y, **z): return x",
-        "x = 3");
-    assertThat(stmts).hasSize(2);
-  }
-
-  @Test
-  public void testMissingBlock() throws Exception {
-    setFailFast(false);
-    List<Statement> stmts = parseFileWithPython(
-        "x = 1;",
-        "def foo(x):",
-        "x = 2;\n");
-    assertThat(stmts).hasSize(2);
-    assertContainsError("expected an indented block");
-  }
-
-  @Test
-  public void testInvalidDef() throws Exception {
-    setFailFast(false);
-    parseFileWithPython(
-        "x = 1;",
-        "def foo(x)",
-        "x = 2;\n");
-    assertContainsError("syntax error at 'EOF'");
-  }
-
-  @Test
   public void testDefSingleLine() throws Exception {
     List<Statement> statements = parseFileForSkylark(
         "def foo(): x = 1; y = 2\n");
     FunctionDefStatement stmt = (FunctionDefStatement) statements.get(0);
     assertThat(stmt.getStatements()).hasSize(2);
-  }
-
-  @Test
-  public void testSkipIfBlock() throws Exception {
-    // Skip over 'if' blocks, when parsePython is set
-    List<Statement> stmts = parseFileWithPython(
-        "x = 1;",
-        "if x == 1:",
-        "  foo(x)",
-        "else:",
-        "  bar(x)",
-        "x = 3;\n");
-    assertThat(stmts).hasSize(2);
   }
 
   @Test
@@ -1086,31 +1008,31 @@ public class ParserTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testValidAbsoluteImportPath() {
+  public void testValidAbsoluteImportPath() throws SkylarkImportSyntaxException {
     String importString = "/some/skylark/file";
     List<Statement> statements =
         parseFileForSkylark("load('" + importString + "', 'fun_test')\n");
     LoadStatement stmt = (LoadStatement) statements.get(0);
-    SkylarkImport imp = stmt.getImport();
+    SkylarkImport imp = SkylarkImports.create(stmt.getImport().getValue());
 
     assertThat(imp.getImportString()).named("getImportString()").isEqualTo("/some/skylark/file");
     assertThat(imp.hasAbsolutePath()).named("hasAbsolutePath()").isTrue();
     assertThat(imp.getAbsolutePath()).named("getAbsolutePath()")
         .isEqualTo(new PathFragment("/some/skylark/file.bzl"));
 
-    int startOffset = stmt.getImportLocation().getStartOffset();
-    int endOffset = stmt.getImportLocation().getEndOffset();
+    int startOffset = stmt.getImport().getLocation().getStartOffset();
+    int endOffset = stmt.getImport().getLocation().getEndOffset();
     assertThat(startOffset).named("getStartOffset()").isEqualTo(5);
     assertThat(endOffset).named("getEndOffset()")
         .isEqualTo(startOffset + importString.length() + 2);
   }
 
   private void validNonAbsoluteImportTest(String importString, String containingFileLabelString,
-      String expectedLabelString) {
+      String expectedLabelString) throws SkylarkImportSyntaxException {
     List<Statement> statements =
         parseFileForSkylark("load('" + importString + "', 'fun_test')\n");
     LoadStatement stmt = (LoadStatement) statements.get(0);
-    SkylarkImport imp = stmt.getImport();
+    SkylarkImport imp = SkylarkImports.create(stmt.getImport().getValue());
 
     assertThat(imp.getImportString()).named("getImportString()").isEqualTo(importString);
     assertThat(imp.hasAbsolutePath()).named("hasAbsolutePath()").isFalse();
@@ -1119,8 +1041,8 @@ public class ParserTest extends EvaluationTestCase {
     assertThat(imp.getLabel(containingFileLabel)).named("containingFileLabel()")
         .isEqualTo(Label.parseAbsoluteUnchecked(expectedLabelString)); 
 
-    int startOffset = stmt.getImportLocation().getStartOffset();
-    int endOffset = stmt.getImportLocation().getEndOffset();
+    int startOffset = stmt.getImport().getLocation().getStartOffset();
+    int endOffset = stmt.getImport().getLocation().getEndOffset();
     assertThat(startOffset).named("getStartOffset()").isEqualTo(5);
     assertThat(endOffset).named("getEndOffset()")
         .isEqualTo(startOffset + importString.length() + 2);
@@ -1129,7 +1051,7 @@ public class ParserTest extends EvaluationTestCase {
   private void invalidImportTest(String importString, String expectedMsg) {
     setFailFast(false);
     parseFileForSkylark("load('" + importString + "', 'fun_test')\n"); 
-    assertContainsError(expectedMsg);    
+    assertContainsError(expectedMsg);
   }
 
   @Test
@@ -1159,7 +1081,8 @@ public class ParserTest extends EvaluationTestCase {
     invalidImportTest("\tfile", SkylarkImports.INVALID_FILENAME_PREFIX);
   }
 
-  private void validAbsoluteImportLabelTest(String importString) {
+  private void validAbsoluteImportLabelTest(String importString)
+      throws SkylarkImportSyntaxException {
     validNonAbsoluteImportTest(importString, /*irrelevant*/ "//another/path:BUILD",
         /*expected*/ importString);
   }
@@ -1242,8 +1165,13 @@ public class ParserTest extends EvaluationTestCase {
     List<Statement> statements = parseFileForSkylark(
         "load('/foo/bar/file', 'fun_test')\n");
     LoadStatement stmt = (LoadStatement) statements.get(0);
-    assertEquals("/foo/bar/file", stmt.getImport().getImportString());
+    assertEquals("/foo/bar/file", stmt.getImport().getValue());
     assertThat(stmt.getSymbols()).hasSize(1);
+    Identifier sym = stmt.getSymbols().get(0);
+    int startOffset = sym.getLocation().getStartOffset();
+    int endOffset = sym.getLocation().getEndOffset();
+    assertThat(startOffset).named("getStartOffset()").isEqualTo(22);
+    assertThat(endOffset).named("getEndOffset()").isEqualTo(startOffset + 10);
   }
 
   @Test
@@ -1251,7 +1179,7 @@ public class ParserTest extends EvaluationTestCase {
     List<Statement> statements = parseFileForSkylark(
         "load('/foo/bar/file', 'fun_test',)\n");
     LoadStatement stmt = (LoadStatement) statements.get(0);
-    assertEquals("/foo/bar/file", stmt.getImport().getImportString());
+    assertEquals("/foo/bar/file", stmt.getImport().getValue());
     assertThat(stmt.getSymbols()).hasSize(1);
   }
 
@@ -1260,7 +1188,7 @@ public class ParserTest extends EvaluationTestCase {
     List<Statement> statements = parseFileForSkylark(
         "load('file', 'foo', 'bar')\n");
     LoadStatement stmt = (LoadStatement) statements.get(0);
-    assertEquals("file", stmt.getImport().getImportString());
+    assertEquals("file", stmt.getImport().getValue());
     assertThat(stmt.getSymbols()).hasSize(2);
   }
 
@@ -1287,7 +1215,18 @@ public class ParserTest extends EvaluationTestCase {
 
   @Test
   public void testLoadAlias() throws Exception {
-    runLoadAliasTestForSymbols("my_alias = 'lawl'", "my_alias");
+    List<Statement> statements = parseFileForSkylark(
+        "load('/foo/bar/file', my_alias = 'lawl')\n");
+    LoadStatement stmt = (LoadStatement) statements.get(0);
+    ImmutableList<Identifier> actualSymbols = stmt.getSymbols();
+
+    assertThat(actualSymbols).hasSize(1);
+    Identifier sym = actualSymbols.get(0);
+    assertThat(sym.getName()).isEqualTo("my_alias");
+    int startOffset = sym.getLocation().getStartOffset();
+    int endOffset = sym.getLocation().getEndOffset();
+    assertThat(startOffset).named("getStartOffset()").isEqualTo(22);
+    assertThat(endOffset).named("getEndOffset()").isEqualTo(startOffset + 8);
   }
 
   @Test

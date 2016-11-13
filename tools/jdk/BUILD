@@ -9,7 +9,7 @@ genrule(
     name = "BUILD-jdk7",
     srcs = [":BUILD"],
     outs = ["BUILD.jdk7"],
-    cmd = "sed 's/_version = \"8\"/_version = \"7\"/' $< > $@",
+    cmd = "sed -e 's/_version = \"8\"/_version = \"7\"/' -e 's/javac_supports_workers = 1/javac_supports_workers = 0/' $< > $@",
 )
 
 filegroup(
@@ -20,39 +20,39 @@ filegroup(
     }),
 )
 
-filegroup(
+alias(
     name = "jni_header",
-    srcs = ["//external:jni_header"],
+    actual = "//external:jni_header",
 )
 
-filegroup(
+alias(
     name = "jni_md_header-darwin",
-    srcs = ["//external:jni_md_header-darwin"],
+    actual = "//external:jni_md_header-darwin",
 )
 
-filegroup(
+alias(
     name = "jni_md_header-linux",
-    srcs = ["//external:jni_md_header-linux"],
+    actual = "//external:jni_md_header-linux",
 )
 
-filegroup(
+alias(
     name = "jni_md_header-freebsd",
-    srcs = ["//external:jni_md_header-freebsd"],
+    actual = "//external:jni_md_header-freebsd",
 )
 
-filegroup(
+alias(
     name = "java",
-    srcs = ["//external:java"],
+    actual = "//external:java",
 )
 
-filegroup(
+alias(
     name = "jar",
-    srcs = ["//external:jar"],
+    actual = "//external:jar",
 )
 
-filegroup(
+alias(
     name = "javac",
-    srcs = ["//external:javac"],
+    actual = "//external:javac",
 )
 
 # On Windows, executables end in ".exe", but the label we reach it through
@@ -71,14 +71,14 @@ BOOTCLASS_JARS = [
     "charsets.jar",
 ]
 
-filegroup(
+alias(
     name = "bootclasspath",
-    srcs = ["//external:bootclasspath"],
+    actual = "//external:bootclasspath",
 )
 
-filegroup(
+alias(
     name = "extdir",
-    srcs = ["//external:extdir"],
+    actual = "//external:extdir",
 )
 
 filegroup(
@@ -92,26 +92,14 @@ java_import(
     neverlink = 1,
 )
 
-# This one is just needed because of how filegroup redirection works.
-filegroup(name = "jre-null")
-
-filegroup(
+alias(
     name = "jre",
-    srcs = [
-        ":jre-null",
-        "//external:jre-default",
-    ],
+    actual = "//external:jre",
 )
 
-# This one is just needed because of how filegroup redirection works.
-filegroup(name = "jdk-null")
-
-filegroup(
+alias(
     name = "jdk",
-    srcs = [
-        ":jdk-null",
-        "//external:jdk-default",
-    ],
+    actual = "//external:jdk",
 )
 
 java_toolchain(
@@ -124,7 +112,11 @@ java_toolchain(
     ijar = ["@bazel_tools//tools/jdk:ijar"],
     javabuilder = ["//tools/jdk:JavaBuilder_deploy.jar"],
     javac = ["//third_party/java/jdk/langtools:javac_jar"],
-    jvm_opts = ["-client"],
+    javac_supports_workers = 1,
+    jvm_opts = [
+        "-XX:+TieredCompilation",
+        "-XX:TieredStopAtLevel=1",
+    ],
     singlejar = ["//tools/jdk:SingleJar_deploy.jar"],
     source_version = "8",
     target_version = "8",

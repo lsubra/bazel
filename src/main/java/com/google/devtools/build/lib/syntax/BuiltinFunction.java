@@ -20,13 +20,11 @@ import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
 import com.google.devtools.build.lib.syntax.SkylarkType.SkylarkFunctionType;
 import com.google.devtools.build.lib.util.Preconditions;
-
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.NoSuchElementException;
-
 import javax.annotation.Nullable;
 
 /**
@@ -124,9 +122,10 @@ public class BuiltinFunction extends BaseFunction {
   public Object call(Object[] args,
       FuncallExpression ast, Environment env)
       throws EvalException, InterruptedException {
-    Preconditions.checkNotNull(ast);
     Preconditions.checkNotNull(env);
-    Location loc = ast.getLocation();
+
+    // ast is null when called from Java (as there's no Skylark call site).
+    Location loc = ast == null ? Location.BUILTIN : ast.getLocation();
 
     // Add extra arguments, if needed
     if (extraArgs != null) {
@@ -149,8 +148,7 @@ public class BuiltinFunction extends BaseFunction {
       }
     }
 
-    Profiler.instance().startTask(ProfilerTask.SKYLARK_BUILTIN_FN,
-        this.getClass().getName() + "#" + getName());
+    Profiler.instance().startTask(ProfilerTask.SKYLARK_BUILTIN_FN, getName());
     // Last but not least, actually make an inner call to the function with the resolved arguments.
     try {
       env.enterScope(this, ast, env.getGlobals());
@@ -199,7 +197,7 @@ public class BuiltinFunction extends BaseFunction {
   private static String stacktraceToString(StackTraceElement[] elts) {
     StringBuilder b = new StringBuilder();
     for (StackTraceElement e : elts) {
-      b.append(e.toString());
+      b.append(e);
       b.append("\n");
     }
     return b.toString();

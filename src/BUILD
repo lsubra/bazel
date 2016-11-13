@@ -8,7 +8,8 @@ filegroup(
     srcs = select({
         ":darwin": ["//src/main/native:libunix.dylib"],
         ":darwin_x86_64": ["//src/main/native:libunix.dylib"],
-        ":windows": [],
+        ":windows": ["//src/main/native:windows_jni.dll"],
+        ":windows_msvc": ["//src/main/native:windows_jni.dll"],
         "//conditions:default": ["//src/main/native:libunix.so"],
     }),
     visibility = [
@@ -26,9 +27,9 @@ filegroup(
         ":libunix",
         "//src/main/tools:build-runfiles",
         "//src/main/tools:process-wrapper",
-        "//src/main/tools:namespace-sandbox",
+        "//src/main/tools:linux-sandbox",
         "//src/main/tools:build_interface_so",
-        "//src/tools/xcode/xcodelocator:xcode-locator",
+        "//tools/osx:xcode-locator",
     ] + embedded_tools,
     outs = ["install_base_key" + suffix],
     cmd = select({
@@ -75,6 +76,7 @@ OSX_DUMMY_TARGETS = [
     "src/tools/xcode/actoolwrapper/actoolwrapper",
     "src/tools/xcode/ibtoolwrapper/ibtoolwrapper",
     "src/tools/xcode/libtool/libtool",
+    "src/tools/xcode/libtool/make_hashed_objlist.py",
     "src/tools/xcode/momcwrapper/momcwrapper",
     "src/tools/xcode/swiftstdlibtoolwrapper/swiftstdlibtoolwrapper",
     "src/tools/xcode/environment/environment_plist",
@@ -101,16 +103,16 @@ filegroup(
     srcs = [
         "//src/tools/xcode/actoolwrapper:actoolwrapper",
         "//src/tools/xcode/ibtoolwrapper:ibtoolwrapper",
-        "//src/tools/xcode/libtool:libtool",
+        "//src/tools/xcode/libtool:libtool_srcs",
         "//src/tools/xcode/momcwrapper:momcwrapper",
         "//src/tools/xcode/swiftstdlibtoolwrapper:swiftstdlibtoolwrapper",
         "//src/tools/xcode/environment:environment_plist",
-        "//src/tools/xcode/xcodelocator:xcode-locator",
         "//src/tools/xcode/xcrunwrapper:xcrunwrapper",
         "//src/objc_tools/bundlemerge:bundlemerge_deploy.jar",
         "//src/objc_tools/plmerge:plmerge_deploy.jar",
         "//src/objc_tools/xcodegen:xcodegen_deploy.jar",
         "//src/tools/xcode/realpath:realpath",
+        "//tools/osx:xcode_locator.m",
     ] + select({
         ":iphonesdk": ["//src/tools/xcode/stdredirect:StdRedirect.dylib"],
         "//conditions:default": [":dummy_darwin_tool_src_tools_xcode_stdredirect_StdRedirect.dylib"],
@@ -130,9 +132,10 @@ genrule(
     srcs = [
         ":create_embedded_tools.sh",
         "//tools:embedded_tools_srcs",
+        "//third_party:gpl-srcs",
         "//third_party/iossim:srcs",
         "//third_party/java/jarjar:srcs",
-        "//third_party/java/jdk/langtools:srcs",
+        "//third_party/java/jdk/langtools:test-srcs",
         "//third_party/py/concurrent:srcs",
         "//third_party/py/gflags:srcs",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper:srcs",
@@ -143,12 +146,12 @@ genrule(
         "//src/tools/android/java/com/google/devtools/build/android/ziputils:embedded_tools",
         "//src/main/protobuf:srcs",
         "//src/java_tools/buildjar:JavaBuilderDeploy",
-        "//src/java_tools/buildjar/java/com/google/devtools/build/java/turbine:turbine_deploy.jar",
         "//src/java_tools/singlejar:SingleJar_deploy.jar",
         "//src/java_tools/buildjar/java/com/google/devtools/build/buildjar/genclass:GenClass_deploy.jar",
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner:Runner_deploy.jar",
         "//third_party/ijar",
         "//third_party/java/apkbuilder:embedded_tools",
+        "//third_party/java/apksig:embedded_tools",
     ] + select({
         ":darwin": [
             ":darwin_tools",
@@ -158,11 +161,14 @@ genrule(
             ":darwin_tools",
             "//third_party/ijar:zipper",
         ],
-        # Windows specifically exclude zipper for now.
-        ":windows": [":dummy_darwin_tools"],
         "//conditions:default": [
             ":dummy_darwin_tools",
             "//third_party/ijar:zipper",
+        ],
+    }) + select({
+        "//tools/jdk:jdk7": [],
+        "//conditions:default": [
+            "//src/java_tools/buildjar/java/com/google/devtools/build/java/turbine:turbine_deploy.jar",
         ],
     }),
     outs = ["embedded_tools.zip"],
@@ -182,9 +188,9 @@ genrule(
         "//src/main/tools:build-runfiles",
         "//src/main/tools:process-wrapper",
         "//src/main/tools:jdk-support",
-        "//src/main/tools:namespace-sandbox",
+        "//src/main/tools:linux-sandbox",
         "//src/main/tools:build_interface_so",
-        "//src/tools/xcode/xcodelocator:xcode-locator",
+        "//tools/osx:xcode-locator",
         ":java-version",
     ],
     outs = ["package" + suffix + ".zip"],
@@ -211,6 +217,7 @@ genrule(
     visibility = [
         "//scripts:__pkg__",  # For bash completion generation
         "//scripts/packages:__pkg__",  # For installer generation
+        "//src/java:__subpackages__",  # For command line reference generation
         "//src/test:__subpackages__",  # For integration tests
     ],
 ) for suffix in [
@@ -268,6 +275,12 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+config_setting(
+    name = "windows_msvc",
+    values = {"cpu": "x64_windows_msvc"},
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "srcs",
     srcs = glob(["**"]) + [
@@ -280,6 +293,7 @@ filegroup(
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/sharding:srcs",
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/sharding/api:srcs",
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/sharding/testing:srcs",
+        "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/sharding/weighted:srcs",
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/util:srcs",
         "//src/java_tools/singlejar:srcs",
         "//src/main/cpp:srcs",
@@ -287,12 +301,20 @@ filegroup(
         "//src/main/java/com/google/devtools/build/lib:srcs",
         "//src/main/java/com/google/devtools/build/skyframe:srcs",
         "//src/main/java/com/google/devtools/common/options:srcs",
+        "//src/main/java/com/google/devtools/skylark:srcs",
         "//src/main/native:srcs",
         "//src/main/protobuf:srcs",
         "//src/main/tools:srcs",
         "//src/objc_tools/bundlemerge:srcs",
         "//src/objc_tools/plmerge:srcs",
         "//src/objc_tools/xcodegen:srcs",
+        "//src/test/cpp:srcs",
+        "//src/test/java/com/google/devtools/build/android:srcs",
+        "//src/test/java/com/google/devtools/build/docgen:srcs",
+        "//src/test/java/com/google/devtools/build/lib:srcs",
+        "//src/test/java/com/google/devtools/build/skyframe:srcs",
+        "//src/test/java/com/google/devtools/common/options:srcs",
+        "//src/test/shell:srcs",
         "//src/tools/android/java/com/google/devtools/build/android:srcs",
         "//src/tools/generate_workspace:srcs",
         "//src/tools/xcode/actoolwrapper:srcs",
@@ -301,11 +323,13 @@ filegroup(
         "//src/tools/xcode/libtool:srcs",
         "//src/tools/xcode/momcwrapper:srcs",
         "//src/tools/xcode/realpath:srcs",
+        "//src/tools/singlejar:srcs",
         "//src/tools/xcode/stdredirect:srcs",
         "//src/tools/xcode/swiftstdlibtoolwrapper:srcs",
-        "//src/tools/xcode/xcodelocator:srcs",
         "//src/tools/xcode/xcrunwrapper:srcs",
         "//src/tools/xcode-common:srcs",
+        "//src/tools/remote_worker:srcs",
+        "//tools/osx:srcs",
     ],
     visibility = ["//:__pkg__"],
 )

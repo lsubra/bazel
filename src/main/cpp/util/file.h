@@ -18,23 +18,16 @@
 
 namespace blaze_util {
 
-using std::string;
-
 // Returns the part of the path before the final "/".  If there is a single
 // leading "/" in the path, the result will be the leading "/".  If there is
 // no "/" in the path, the result is the empty prefix of the input (i.e., "").
-string Dirname(const string &path);
+std::string Dirname(const std::string &path);
 
 // Returns the part of the path after the final "/".  If there is no
 // "/" in the path, the result is the same as the input.
-string Basename(const string &path);
+std::string Basename(const std::string &path);
 
-string JoinPath(const string &path1, const string &path2);
-
-// Checks each element of the PATH variable for executable. If none is found, ""
-// is returned.  Otherwise, the full path to executable is returned. Can die if
-// looking up PATH fails.
-string Which(const string &executable);
+std::string JoinPath(const std::string &path1, const std::string &path2);
 
 }  // namespace blaze_util
 

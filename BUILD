@@ -14,8 +14,16 @@ filegroup(
     name = "workspace-file",
     srcs = [":WORKSPACE"],
     visibility = [
-        "//src/test/shell/bazel:__pkg__",
+        "//src/test/shell/bazel:__subpackages__",
         "//tools/cpp/test:__pkg__",
+    ],
+)
+
+filegroup(
+    name = "changelog-file",
+    srcs = [":CHANGELOG.md"],
+    visibility = [
+        "//scripts/packages:__pkg__",
     ],
 )
 
@@ -27,6 +35,7 @@ filegroup(
             "bazel-*",  # convenience symlinks
             "out",  # IntelliJ with setup-intellij.sh
             "output",  # output of compile.sh
+            "WORKSPACE.user.bzl",  # generated workspace file
             ".*",  # mainly .git* files
         ],
     ) + [

@@ -18,13 +18,13 @@
 # that use only the loading or analysis phases.
 #
 
-# Load test environment
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/testenv.sh \
-  || { echo "testenv.sh not found!" >&2; exit 1; }
+# Our tests use the static crosstool, so make it the default.
+add_to_bazelrc "build --crosstool_top=@bazel_tools//tools/cpp:default-toolchain"
 
-create_and_cd_client
-put_bazel_on_path
-write_default_bazelrc
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 output_base=$TEST_TMPDIR/out
 TEST_stderr=$(dirname $TEST_log)/stderr
@@ -54,6 +54,12 @@ function test_query_buildfiles_with_load() {
     expect_log //x:BUILD
     expect_log //y:BUILD
     expect_log //y:rules.bzl
+
+    # null terminated:
+    bazel query --noshow_progress --null 'buildfiles(//x)' >null.log ||
+        fail "Expected null success"
+    printf '//y:rules.bzl\0//y:BUILD\0//x:BUILD\0' >null.ref.log
+    cmp null.ref.log null.log || fail "Expected match"
 
     # Missing skylark file:
     rm -f y/rules.bzl
@@ -103,16 +109,16 @@ function test_options_errors() {
 function test_bazelrc_option() {
     cp ${bazelrc} ${new_workspace_dir}/.${PRODUCT_NAME}rc
 
-    echo "build --cpu=piii" >>.${PRODUCT_NAME}rc    # default bazelrc
-    $bazel info >/dev/null 2>$TEST_log
+    echo "build --cpu=armeabi-v7a" >>.${PRODUCT_NAME}rc    # default bazelrc
+    $PATH_TO_BAZEL_BIN info >/dev/null 2>$TEST_log
     expect_log "Reading.*$(pwd)/.${PRODUCT_NAME}rc:
-.*--cpu=piii"
+.*--cpu=armeabi-v7a"
 
     cp .${PRODUCT_NAME}rc foo
-    echo "build --cpu=k8"   >>foo         # non-default bazelrc
-    $bazel --${PRODUCT_NAME}rc=foo info >/dev/null 2>$TEST_log
+    echo "build --cpu=armeabi-v7a"   >>foo         # non-default bazelrc
+    $PATH_TO_BAZEL_BIN --${PRODUCT_NAME}rc=foo info >/dev/null 2>$TEST_log
     expect_log "Reading.*$(pwd)/foo:
-.*--cpu=k8"
+.*--cpu=armeabi-v7a"
 }
 
 # This exercises the production-code assertion in AbstractCommand.java
@@ -309,4 +315,4 @@ function test_incremental_deleting_package_roots() {
   expect_not_log "//a:external"
 }
 
-run_suite "Miscellaneous integration tests of bazel, using loading/analysis phases."
+run_suite "Integration tests of ${PRODUCT_NAME} using loading/analysis phases."

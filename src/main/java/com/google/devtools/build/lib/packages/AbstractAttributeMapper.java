@@ -15,11 +15,9 @@ package com.google.devtools.build.lib.packages;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.BuildType.SelectorList;
 import com.google.devtools.build.lib.syntax.Type;
-
 import javax.annotation.Nullable;
 
 /**
@@ -137,7 +135,7 @@ public abstract class AbstractAttributeMapper implements AttributeMap {
   }
 
   @Override
-  public void visitLabels(AcceptsLabelAttribute observer) {
+  public void visitLabels(AcceptsLabelAttribute observer) throws InterruptedException {
     for (Attribute attribute : ruleClass.getAttributes()) {
       Type<?> type = attribute.getType();
       // TODO(bazel-team): clean up the typing / visitation interface so we don't have to
@@ -149,23 +147,37 @@ public abstract class AbstractAttributeMapper implements AttributeMap {
     }
   }
 
-  /**
-   * Visits all labels reachable from the given attribute.
-   */
-  protected void visitLabels(Attribute attribute, AcceptsLabelAttribute observer) {
+  /** Visits all labels reachable from the given attribute. */
+  protected void visitLabels(final Attribute attribute, final AcceptsLabelAttribute observer)
+      throws InterruptedException {
     Type<?> type = attribute.getType();
     Object value = get(attribute.getName(), type);
     if (value != null) { // null values are particularly possible for computed defaults.
-      for (Label label : extractLabels(type, value)) {
-        Label absoluteLabel = ruleLabel.resolveRepositoryRelative(label);
-        observer.acceptLabelAttribute(absoluteLabel, attribute);
-      }
+      type.visitLabels(new Type.LabelVisitor() {
+        @Override
+        public void visit(@Nullable Label label) throws InterruptedException {
+          if (label != null) {
+            Label absoluteLabel = ruleLabel.resolveRepositoryRelative(label);
+            observer.acceptLabelAttribute(absoluteLabel, attribute);
+          }
+        }
+      }, value);
     }
   }
 
   @Override
-  public <T> boolean isConfigurable(String attributeName, Type<T> type) {
+  public final <T> boolean isConfigurable(String attributeName, Type<T> type) {
     return getSelectorList(attributeName, type) != null;
+  }
+
+  public static <T> boolean isConfigurable(Rule rule, String attributeName, Type<T> type) {
+    SelectorList<T> selectorMaybe = getSelectorList(
+        rule.getRuleClassObject(),
+        rule.getLabel(),
+        rule.getAttributeContainer(),
+        attributeName,
+        type);
+    return selectorMaybe != null;
   }
 
   /**
@@ -178,8 +190,18 @@ public abstract class AbstractAttributeMapper implements AttributeMap {
    * @throws IllegalArgumentException if the attribute is configurable but of the wrong type
    */
   @Nullable
+  protected final <T> SelectorList<T> getSelectorList(String attributeName, Type<T> type) {
+    return getSelectorList(ruleClass, ruleLabel, attributes, attributeName, type);
+  }
+
+  @Nullable
   @SuppressWarnings("unchecked")
-  protected <T> SelectorList<T> getSelectorList(String attributeName, Type<T> type) {
+  protected static <T> SelectorList<T> getSelectorList(
+      RuleClass ruleClass,
+      Label ruleLabel,
+      AttributeContainer attributes,
+      String attributeName,
+      Type<T> type) {
     Integer index = ruleClass.getAttributeIndex(attributeName);
     if (index == null) {
       return null;
@@ -225,11 +247,5 @@ public abstract class AbstractAttributeMapper implements AttributeMap {
   public boolean has(String attrName, Type<?> type) {
     Attribute attribute = ruleClass.getAttributeByNameMaybe(attrName);
     return attribute != null && attribute.getType() == type;
-  }
-
-  protected static Iterable<Label> extractLabels(Type type, Object value) {
-    return value == null
-        ? ImmutableList.<Label>of()
-        : Iterables.filter(type.flatten(value), Label.class);
   }
 }

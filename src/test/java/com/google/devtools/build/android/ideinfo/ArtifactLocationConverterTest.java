@@ -26,6 +26,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.nio.file.Paths;
+
 /**
  * Tests {@link ArtifactLocationConverter}.
  */
@@ -42,28 +44,28 @@ public class ArtifactLocationConverterTest {
   @Test
   public void testConverterSourceArtifact() throws Exception {
     ArtifactLocation parsed = converter.convert(
-        Joiner.on(",").join("", "test.java", "/usr/local/code")
+        Joiner.on(',').join("", "test.java")
     );
-    assertThat(parsed).isEqualTo(
-        ArtifactLocation.newBuilder()
-        .setRootPath("/usr/local/code")
-        .setRelativePath("test.java")
-        .setIsSource(true)
-        .build());
+    assertThat(parsed)
+        .isEqualTo(
+            ArtifactLocation.newBuilder()
+                .setRelativePath(Paths.get("test.java").toString())
+                .setIsSource(true)
+                .build());
   }
 
   @Test
   public void testConverterDerivedArtifact() throws Exception {
     ArtifactLocation parsed = converter.convert(
-        Joiner.on(",").join("bin", "java/com/test.java", "/usr/local/_tmp/code/bin")
+        Joiner.on(',').join("bin", "java/com/test.java")
     );
-    assertThat(parsed).isEqualTo(
-        ArtifactLocation.newBuilder()
-            .setRootPath("/usr/local/_tmp/code/bin")
-            .setRootExecutionPathFragment("bin")
-            .setRelativePath("java/com/test.java")
-            .setIsSource(false)
-            .build());
+    assertThat(parsed)
+        .isEqualTo(
+            ArtifactLocation.newBuilder()
+                .setRootExecutionPathFragment(Paths.get("bin").toString())
+                .setRelativePath(Paths.get("java/com/test.java").toString())
+                .setIsSource(false)
+                .build());
   }
 
   @Test
@@ -73,14 +75,16 @@ public class ArtifactLocationConverterTest {
   }
 
   @Test
-  public void testFutureFormat() throws Exception {
-    ArtifactLocation parsed = converter.convert("bin/out,java/com/test.java");
-    assertThat(parsed).isEqualTo(
-        ArtifactLocation.newBuilder()
-            .setRootExecutionPathFragment("bin/out")
-            .setRelativePath("java/com/test.java")
-            .setIsSource(false)
-            .build());
+  public void testOldFormat() throws Exception {
+    ArtifactLocation parsed = converter
+        .convert("bin/out,java/com/test.java,/usr/local/_tmp/code/bin/out");
+    assertThat(parsed)
+        .isEqualTo(
+            ArtifactLocation.newBuilder()
+                .setRootExecutionPathFragment(Paths.get("bin/out").toString())
+                .setRelativePath(Paths.get("java/com/test.java").toString())
+                .setIsSource(false)
+                .build());
   }
 
 

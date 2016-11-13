@@ -14,7 +14,9 @@
 
 package com.google.devtools.build.lib.rules.java;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDepsMode.OFF;
+import static com.google.devtools.build.lib.rules.java.JavaCompilationArgs.ClasspathType.BOTH;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -24,7 +26,6 @@ import com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDe
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.rules.java.JavaConfiguration.JavaClasspathMode;
 import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -92,6 +93,7 @@ public final class JavaLibraryHelper {
   }
 
   public JavaLibraryHelper addDep(JavaCompilationArgsProvider provider) {
+    checkNotNull(provider);
     this.deps.add(provider);
     return this;
   }
@@ -111,15 +113,23 @@ public final class JavaLibraryHelper {
   }
 
   /**
-   * Sets the mode that determines how strictly dependencies are checked.
+   * When in strict mode, compiling the source-jars passed to this JavaLibraryHelper will break if
+   * they depend on classes not in any of the {@link
+   * JavaCompilationArgsProvider#javaCompilationArgs} passed in {@link #addDep}, even if they do
+   * appear in {@link JavaCompilationArgsProvider#recursiveJavaCompilationArgs}. That is, depending
+   * on a class requires a direct dependency on it.
+   *
+   * <p>Contrast this with the strictness-parameter to {@link #buildCompilationArgsProvider}, which
+   * controls whether others depending on the result of this compilation, can perform strict-deps
+   * checks at all.
    */
-  public JavaLibraryHelper setStrictDepsMode(StrictDepsMode strictDepsMode) {
+  public JavaLibraryHelper setCompilationStrictDepsMode(StrictDepsMode strictDepsMode) {
     this.strictDepsMode = strictDepsMode;
     return this;
   }
 
   /**
-   * Creates the compile actions and providers.
+   * Creates the compile actions.
    */
   public JavaCompilationArgs build(JavaSemantics semantics) {
     Preconditions.checkState(output != null, "must have an output file; use setOutput()");
@@ -152,12 +162,34 @@ public final class JavaLibraryHelper {
     return JavaCompilationArgs.builder().merge(artifactsBuilder.build()).build();
   }
 
+  /**
+   * Returns a JavaCompilationArgsProvider that fully encapsulates this compilation, based on the
+   * result of a call to build(). (that is, it contains the compile-time and runtime jars, separated
+   * by direct vs transitive jars).
+   *
+   * @param isReportedAsStrict if true, the result's direct JavaCompilationArgs only contain classes
+   *     resulting from compiling the source-jars. If false, the direct JavaCompilationArgs contain
+   *     both these classes, as well as any classes from transitive dependencies. A value of 'false'
+   *     means this compilation cannot be checked for strict-deps, by any consumer (depending)
+   *     compilation. Contrast this with {@link #setCompilationStrictDepsMode}.
+   */
+  public JavaCompilationArgsProvider buildCompilationArgsProvider(
+      JavaCompilationArgs directArgs, boolean isReportedAsStrict) {
+    JavaCompilationArgs transitiveArgs =
+        JavaCompilationArgs.builder()
+            .addTransitiveArgs(directArgs, BOTH)
+            .addTransitiveDependencies(deps, true /* recursive */)
+            .build();
+
+    return JavaCompilationArgsProvider.create(
+        isReportedAsStrict ? directArgs : transitiveArgs, transitiveArgs);
+  }
+
   private void addDepsToAttributes(JavaTargetAttributes.Builder attributes) {
     NestedSet<Artifact> directJars;
     if (isStrict()) {
       directJars = getNonRecursiveCompileTimeJarsFromDeps();
       if (directJars != null) {
-        attributes.addDirectCompileTimeClassPathEntries(directJars);
         attributes.addDirectJars(directJars);
       }
     }
@@ -172,9 +204,10 @@ public final class JavaLibraryHelper {
   }
 
   private NestedSet<Artifact> getNonRecursiveCompileTimeJarsFromDeps() {
-    JavaCompilationArgs.Builder builder = JavaCompilationArgs.builder();
-    builder.addTransitiveDependencies(deps, false);
-    return builder.build().getCompileTimeJars();
+    return JavaCompilationArgs.builder()
+        .addTransitiveDependencies(deps, false)
+        .build()
+        .getCompileTimeJars();
   }
 
   private boolean isStrict() {

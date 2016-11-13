@@ -1,15 +1,20 @@
+#if (!$singlePage)
 ---
 layout: documentation
 title: Make Variables
 ---
+#end
+#if (!$singlePage)
 #parse("com/google/devtools/build/docgen/templates/be/header.vm")
+#end
 
 <!-- ============================================
                       variables
      ============================================
 -->
-<h1>"Make" Variables</h1>
+<h1 id="make-variables">"Make" Variables</h1>
 
+#if (!$singlePage)
 <div class="toc">
   <ul>
     <li><a href="#make-var-substitution">"Make" variable subsitution</a></li>
@@ -17,6 +22,7 @@ title: Make Variables
     <li><a href="#location">"$(location)" substitution</a></li>
   </ul>
 </div>
+#end
 <p>
   This section describes how to use a special class of built-in string variables
   that are called the "Make" environment.
@@ -33,7 +39,7 @@ title: Make Variables
 </p>
 
 <p>Build rules can introduce additional rule specific variables. One example is
-  the <a href="general.html#genrule.cmd"><code>cmd</code> attribute of a genrule</a>.
+  the <a href="$expander.expandRef("genrule.cmd")"><code>cmd</code> attribute of a genrule</a>.
 </p>
 
 <h2 id='make-var-substitution'>"Make" variable substitution</h2>
@@ -81,12 +87,30 @@ tests. Simply rely on the PATH.</p>
 These tools may not be in the PATH, therefore you must use "Make" variable syntax
 in your genrule's cmd attribute.
 <ul>
-  <li> <code>CC</code>: The C compiler command. It is strongly recommended to
-    always use <code>CC_FLAGS</code> when invoking the C compiler.</li>
-  <li> <code>JAVA</code>: The "java" command (a Java virtual machine). Note that
-    this can be a relative path. If you must change directories before invoking
-    <code>java</code>, you need to capture the working directory before changing
-    it.</li>
+  <li class="harmful"> <code>CC</code>: The C compiler command. The built-in C++
+    rules are much more sophisticated than "run the compiler on it". In order to
+    support compilation modes as diverse as *SAN, LIPO, ThinLTO, with/without
+    modules, and carefully optimized binaries at the same time as fast running
+    tests on multiple platforms, the built-in rules go to great lengths to
+    ensure the correct inputs, outputs, and command-line flags are set on each
+    of potentially multiple internally generated actions.
+
+    <p>These environment variables are a fallback mechanism to be used by
+    language experts in rare cases. If you are tempted to use them, please talk
+    to us first.
+
+    <p>It is strongly recommended to always use <code>CC_FLAGS</code> in
+    combination with <code>CC</code>. Fail to do so at your own risk.
+  </li>
+  <li class="harmful"> <code>C_COMPILER</code>:
+    The C compiler frontend, e.g. "gcc".
+  </li>
+  <li class="harmful"> <code>JAVA</code>: The "java" command (a Java virtual
+    machine). Avoid this, and use a <code>java_binary</code> rule instead where
+    possible. May be a relative path. If you must change
+    directories before invoking <code>java</code>, you need to capture the
+    working directory before changing it.
+  </li>
 
   <li> <code>STRIP</code>: The strip command from the same suite as the C
     compiler.</li>
@@ -94,20 +118,15 @@ in your genrule's cmd attribute.
   <li> <code>NM</code>: The "nm" command from crosstool. </li>
   <li> <code>OBJCOPY</code>: The objcopy command from the same suite as the C
     compiler. </li>
-  <li> <code>C_COMPILER</code>:
-    The C compiler frontend, e.g. "gcc". </li>
 </ul>
 
 <p><strong>Tool option Variables</strong></p>
 
 <ul><!--  keep alphabetically sorted  -->
-  <li><code>BINMODE</code>: "-dbg" or "-opt"
-
-    . (<i>When using Bazel's <code>-c fastbuild</code> option,
-      this variable has the value <code>-dbg</code>.</i>) </li>
-  <li><code>CC_FLAGS</code>: A minimal set of flags for the C compiler to be
-    used by genrules. In particular, it contains flags to select the correct
-    architecture if CC supports multiple architectures. </li>
+  <li class="harmful"><code>CC_FLAGS</code>: A minimal set of flags for the C
+    compiler to be used by genrules. In particular, it contains flags to select
+    the correct architecture if <code>CC</code> supports multiple architectures.
+  </li>
   <li><code>COMPILATION_MODE</code>: "fastbuild", "dbg", or "opt".</li>
 
 </ul>
@@ -125,9 +144,15 @@ in your genrule's cmd attribute.
     attribute for the genrule.</li>
   <li><code>GENDIR</code>: The base of the generated code
     tree for the target architecture.</li>
-  <li><code>JAVABASE</code>:
-    The base directory containing the Java utilities.
-    It will have a "bin" subdirectory.</li>
+  <li class="harmful"><code>JAVABASE</code>: for Java, most of the tools in the
+    JDK should not be used as-is. The built-in Java rules use much more
+    sophisticated approaches to Java compilation and packaging than the upstream
+    tools can express, such as interface Jars, header interface Jars, and highly
+    optimized Jar packaging and merging implementations.
+
+    <p>The base directory containing the Java utilities. May be a relative path.
+    It will have a "bin" subdirectory.</p>
+  </li>
 </ul>
 
 <p><strong>Architecture Variables</strong></p>
@@ -142,7 +167,7 @@ in your genrule's cmd attribute.
 
 <p id="predefined_variables.genrule.cmd">
   <strong>
-    Other Variables available to <a href="general.html#genrule.cmd">the cmd
+    Other Variables available to <a href="$expander.expandRef("genrule.cmd")">the cmd
     attribute of a genrule</a>
   </strong>
 </p>
@@ -197,4 +222,6 @@ in your genrule's cmd attribute.
   <code>*_test</code> or <code>*_binary</code> rule.
 </p>
 
+#if (!$singlePage)
 #parse("com/google/devtools/build/docgen/templates/be/footer.vm")
+#end

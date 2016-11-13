@@ -44,7 +44,6 @@ import com.google.devtools.build.lib.syntax.BuiltinFunction;
 import com.google.devtools.build.lib.syntax.ClassObject;
 import com.google.devtools.build.lib.syntax.Environment;
 import com.google.devtools.build.lib.syntax.Environment.Extension;
-import com.google.devtools.build.lib.syntax.Environment.NoSuchVariableException;
 import com.google.devtools.build.lib.syntax.Environment.Phase;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.EvalUtils;
@@ -68,10 +67,10 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.UnixGlob;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -81,7 +80,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
-
 import javax.annotation.Nullable;
 
 /**
@@ -270,9 +268,11 @@ public final class PackageFactory {
   /** {@link Globber} that uses the legacy GlobCache. */
   public static class LegacyGlobber implements Globber {
     private final GlobCache globCache;
+    private final boolean sort;
 
-    public LegacyGlobber(GlobCache globCache) {
+    private LegacyGlobber(GlobCache globCache, boolean sort) {
       this.globCache = globCache;
+      this.sort = sort;
     }
 
     private static class Token extends Globber.Token {
@@ -291,20 +291,25 @@ public final class PackageFactory {
     public Token runAsync(List<String> includes, List<String> excludes, boolean excludeDirs)
         throws BadGlobException {
       for (String pattern : Iterables.concat(includes, excludes)) {
-        globCache.getGlobAsync(pattern, excludeDirs);
+        globCache.getGlobUnsortedAsync(pattern, excludeDirs);
       }
       return new Token(includes, excludes, excludeDirs);
     }
 
     @Override
     public List<String> fetch(Globber.Token token) throws IOException, InterruptedException {
+      List<String> result;
       Token legacyToken = (Token) token;
       try {
-        return globCache.glob(legacyToken.includes, legacyToken.excludes,
+        result = globCache.globUnsorted(legacyToken.includes, legacyToken.excludes,
             legacyToken.excludeDirs);
       } catch (BadGlobException e) {
         throw new IllegalStateException(e);
       }
+      if (sort) {
+        Collections.sort(result);
+      }
+      return result;
     }
 
     @Override
@@ -329,6 +334,8 @@ public final class PackageFactory {
   private final ThreadPoolExecutor threadPool;
   private Map<String, String> platformSetRegexps;
 
+  private int maxDirectoriesToEagerlyVisitInGlobbing;
+
   private final ImmutableList<EnvironmentExtension> environmentExtensions;
   private final ImmutableMap<String, PackageArgument<?>> packageArguments;
 
@@ -338,23 +345,24 @@ public final class PackageFactory {
   @VisibleForTesting
   public abstract static class FactoryForTesting {
     public final PackageFactory create(RuleClassProvider ruleClassProvider, FileSystem fs) {
-      return create(ruleClassProvider, ImmutableList.<EnvironmentExtension>of(), fs);
+      return create(ruleClassProvider, null, ImmutableList.<EnvironmentExtension>of(), fs);
     }
     
     public final PackageFactory create(
         RuleClassProvider ruleClassProvider,
         EnvironmentExtension environmentExtension,
         FileSystem fs) {
-      return create(ruleClassProvider, ImmutableList.of(environmentExtension), fs);
+      return create(ruleClassProvider, null, ImmutableList.of(environmentExtension), fs);
     }
   
     public final PackageFactory create(
         RuleClassProvider ruleClassProvider,
+        Map<String, String> platformSetRegexps,
         Iterable<EnvironmentExtension> environmentExtensions,
         FileSystem fs) {
       return create(
           ruleClassProvider,
-          null,
+          platformSetRegexps,
           AttributeContainer.ATTRIBUTE_CONTAINER_FACTORY,
           environmentExtensions,
           "test",
@@ -423,6 +431,10 @@ public final class PackageFactory {
     threadPool.setMaximumPoolSize(globbingThreads);
   }
 
+  public void setMaxDirectoriesToEagerlyVisitInGlobbing(
+      int maxDirectoriesToEagerlyVisitInGlobbing) {
+    this.maxDirectoriesToEagerlyVisitInGlobbing = maxDirectoriesToEagerlyVisitInGlobbing;
+  }
 
   /**
    * Returns the immutable, unordered set of names of all the known rule
@@ -456,14 +468,14 @@ public final class PackageFactory {
   private ImmutableMap<String, PackageArgument<?>> createPackageArguments() {
     ImmutableList.Builder<PackageArgument<?>> arguments =
         ImmutableList.<PackageArgument<?>>builder()
-           .add(new DefaultDeprecation())
-           .add(new DefaultDistribs())
-           .add(new DefaultLicenses())
-           .add(new DefaultTestOnly())
-           .add(new DefaultVisibility())
-           .add(new Features())
-           .add(new DefaultCompatibleWith())
-           .add(new DefaultRestrictedTo());
+            .add(new DefaultDeprecation())
+            .add(new DefaultDistribs())
+            .add(new DefaultLicenses())
+            .add(new DefaultTestOnly())
+            .add(new DefaultVisibility())
+            .add(new Features())
+            .add(new DefaultCompatibleWith())
+            .add(new DefaultRestrictedTo());
 
     for (EnvironmentExtension extension : environmentExtensions) {
       arguments.addAll(extension.getPackageArguments());
@@ -476,36 +488,62 @@ public final class PackageFactory {
     return packageArguments.build();
   }
 
-  /****************************************************************************
-   * Environment function factories.
+  /**
+   * ************************************************************************** Environment function
+   * factories.
    */
 
   /**
    * Returns a function-value implementing "glob" in the specified package context.
    *
-   * @param async if true, start globs in the background but don't block on their completion.
-   *        Only use this for heuristic preloading.
+   * @param async if true, start globs in the background but don't block on their completion. Only
+   *     use this for heuristic preloading.
    */
-  @SkylarkSignature(name = "glob", objectType = Object.class, returnType = SkylarkList.class,
-      doc = "Returns a list of files that match glob search pattern",
-      mandatoryPositionals = {
-        @Param(name = "include", type = SkylarkList.class, generic1 = String.class,
-            doc = "a list of strings specifying patterns of files to include.")},
-      optionalPositionals = {
-        @Param(name = "exclude", type = SkylarkList.class, generic1 = String.class,
-            defaultValue = "[]",
-            doc = "a list of strings specifying patterns of files to exclude."),
-        // TODO(bazel-team): migrate all existing code to use boolean instead?
-        @Param(name = "exclude_directories", type = Integer.class, defaultValue = "1",
-            doc = "a integer that if non-zero indicates directories should not be matched.")},
-      documented = false, useAst = true, useEnvironment = true)
+  @SkylarkSignature(
+    name = "glob",
+    objectType = Object.class,
+    returnType = SkylarkList.class,
+    doc = "Returns a list of files that match glob search pattern",
+    parameters = {
+      @Param(
+        name = "include",
+        type = SkylarkList.class,
+        generic1 = String.class,
+        doc = "a list of strings specifying patterns of files to include."
+      ),
+      @Param(
+        name = "exclude",
+        type = SkylarkList.class,
+        generic1 = String.class,
+        defaultValue = "[]",
+        positional = false,
+        named = true,
+        doc = "a list of strings specifying patterns of files to exclude."
+      ),
+      // TODO(bazel-team): migrate all existing code to use boolean instead?
+      @Param(
+        name = "exclude_directories",
+        type = Integer.class,
+        defaultValue = "1",
+        positional = false,
+        named = true,
+        doc = "a integer that if non-zero indicates directories should not be matched."
+      )
+    },
+    documented = false,
+    useAst = true,
+    useEnvironment = true
+  )
   private static final BuiltinFunction.Factory newGlobFunction =
       new BuiltinFunction.Factory("glob") {
         public BuiltinFunction create(final PackageContext originalContext, final boolean async) {
           return new BuiltinFunction("glob", this) {
             public SkylarkList invoke(
-                SkylarkList include, SkylarkList exclude, Integer excludeDirectories,
-                FuncallExpression ast, Environment env)
+                SkylarkList include,
+                SkylarkList exclude,
+                Integer excludeDirectories,
+                FuncallExpression ast,
+                Environment env)
                 throws EvalException, ConversionException, InterruptedException {
               return callGlob(
                   originalContext, async, include, exclude, excludeDirectories != 0, ast, env);
@@ -581,7 +619,7 @@ public final class PackageFactory {
    */
   @SkylarkSignature(name = "mocksubinclude", returnType = Runtime.NoneType.class,
       doc = "implement the mocksubinclude function emitted by the PythonPreprocessor",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "label", type = Object.class,
             doc = "a label designator."),
         @Param(name = "path", type = String.class,
@@ -630,13 +668,15 @@ public final class PackageFactory {
   @SkylarkSignature(name = "environment_group", returnType = Runtime.NoneType.class,
       doc = "Defines a set of related environments that can be tagged onto rules to prevent"
       + "incompatible rules from depending on each other.",
-      mandatoryNamedOnly = {
-        @Param(name = "name", type = String.class,
+      parameters = {
+        @Param(name = "name", type = String.class, positional = false, named = true,
             doc = "The name of the rule."),
         // Both parameter below are lists of label designators
         @Param(name = "environments", type = SkylarkList.class, generic1 = Object.class,
+            positional = false, named = true,
             doc = "A list of Labels for the environments to be grouped, from the same package."),
         @Param(name = "defaults", type = SkylarkList.class, generic1 = Object.class,
+            positional = false, named = true,
             doc = "A list of Labels.")}, // TODO(bazel-team): document what that is
       documented = false, useLocation = true)
   private static final BuiltinFunction.Factory newEnvironmentGroupFunction =
@@ -672,10 +712,9 @@ public final class PackageFactory {
    */
   @SkylarkSignature(name = "exports_files", returnType = Runtime.NoneType.class,
       doc = "Declare a set of files as exported",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "srcs", type = SkylarkList.class, generic1 = String.class,
-            doc = "A list of strings, the names of the files to export.")},
-      optionalPositionals = {
+            doc = "A list of strings, the names of the files to export."),
         // TODO(blaze-team): make it possible to express a list of label designators,
         // i.e. a java List or Skylark list of Label or String.
         @Param(name = "visibility", type = SkylarkList.class, noneable = true,
@@ -759,22 +798,8 @@ public final class PackageFactory {
    * TODO(bazel-team): Remove in favor of package.licenses.
    */
   @SkylarkSignature(name = "licenses", returnType = Runtime.NoneType.class,
-      doc = "Declare the license(s) for the code in the current package. Legal license types "
-          + "include:\n"
-          + "<dl>"
-          + "<dt><code>restricted</code></dt><dd>Requires mandatory source distribution.</dd>"
-          + "<dt><code>reciprocal</code></dt><dd>Allows usage of software freely in "
-          + "<b>unmodified</b> form. Any modifications must be made freely available.</dd>"
-          + "<dt><code>notice</code></dt><dd>Original or modified third-party software may be "
-          + "shipped without danger nor encumbering other sources. All of the licenses in this "
-          + "category do, however, have an \"original Copyright notice\" or "
-          + "\"advertising clause\", wherein any external distributions must include the notice "
-          + "or clause specified in the license.</dd>"
-          + "<dt><code>permissive</code></dt><dd>Code that is under a license but does not "
-          + "require a notice.</dd>"
-          + "<dt><code>unencumbered</code></dt><dd>Public domain, free for any use.</dd>"
-          + "</dl>",
-      mandatoryPositionals = {
+      doc = "Declare the license(s) for the code in the current package.",
+      parameters = {
         @Param(name = "license_strings", type = SkylarkList.class, generic1 = String.class,
             doc = "A list of strings, the names of the licenses used.")},
       documented = false, useLocation = true)
@@ -806,7 +831,7 @@ public final class PackageFactory {
   // and share the functions with the native package... which requires unifying the List types.
   @SkylarkSignature(name = "distribs", returnType = Runtime.NoneType.class,
       doc = "Declare the distribution(s) for the code in the current package.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "distribution_strings", type = Object.class,
             doc = "The distributions.")},
       documented = false, useLocation = true)
@@ -831,16 +856,19 @@ public final class PackageFactory {
 
   @SkylarkSignature(name = "package_group", returnType = Runtime.NoneType.class,
       doc = "Declare a set of files as exported",
-      mandatoryNamedOnly = {
-        @Param(name = "name", type = String.class,
-            doc = "The name of the rule.")},
-      optionalNamedOnly = {
+      parameters = {
+        @Param(name = "name", type = String.class, named = true, positional = false,
+            doc = "The name of the rule."),
         @Param(name = "packages", type = SkylarkList.class, generic1 = String.class,
             defaultValue = "[]",
+            named = true,
+            positional = false,
             doc = "A list of Strings specifying the packages grouped."),
         // java list or list of label designators: Label or String
         @Param(name = "includes", type = SkylarkList.class, generic1 = Object.class,
             defaultValue = "[]",
+            named = true,
+            positional = false,
             doc = "A list of Label specifiers for the files to include.")},
       documented = false, useAst = true, useEnvironment = true)
   private static final BuiltinFunction.Factory newPackageGroupFunction =
@@ -869,7 +897,7 @@ public final class PackageFactory {
   private static SkylarkDict<String, Object> targetDict(
       Target target, Location loc, Environment env)
       throws NotRepresentableException, EvalException {
-    if (target == null && !(target instanceof Rule)) {
+    if (target == null || !(target instanceof Rule)) {
       return null;
     }
     SkylarkDict<String, Object> values = SkylarkDict.<String, Object>of(env);
@@ -1157,15 +1185,15 @@ public final class PackageFactory {
    */
   public static PackageContext getContext(Environment env, FuncallExpression ast)
       throws EvalException {
-    try {
-      return (PackageContext) env.lookup(PKG_CONTEXT);
-    } catch (NoSuchVariableException e) {
+    PackageContext value = (PackageContext) env.lookup(PKG_CONTEXT);
+    if (value == null) {
       // if PKG_CONTEXT is missing, we're not called from a BUILD file. This happens if someone
       // uses native.some_func() in the wrong place.
       throw new EvalException(ast.getLocation(),
           "The native module cannot be accessed from here. "
           + "Wrap the function in a macro and call it from a BUILD file");
     }
+    return value;
   }
 
   /**
@@ -1242,8 +1270,7 @@ public final class PackageFactory {
       List<Statement> preludeStatements, EventHandler eventHandler) {
     // Logged messages are used as a testability hook tracing the parsing progress
     LOG.fine("Starting to parse " + packageId);
-    BuildFileAST buildFileAST = BuildFileAST.parseBuildFile(
-        in, preludeStatements, eventHandler, false);
+    BuildFileAST buildFileAST = BuildFileAST.parseBuildFile(in, preludeStatements, eventHandler);
     LOG.fine("Finished parsing of " + packageId);
     return buildFileAST;
   }
@@ -1388,7 +1415,6 @@ public final class PackageFactory {
           buildFileBytes,
           packageId.toString(),
           globber,
-          Environment.BUILD,
           ruleFactory.getRuleClassNames());
     } catch (InterruptedException e) {
       globber.onInterrupt();
@@ -1396,10 +1422,44 @@ public final class PackageFactory {
     }
   }
 
-  public LegacyGlobber createLegacyGlobber(Path packageDirectory, PackageIdentifier packageId,
+  /** Returns a new {@link LegacyGlobber}. */
+  public LegacyGlobber createLegacyGlobber(
+      Path packageDirectory,
+      PackageIdentifier packageId,
       CachingPackageLocator locator) {
-    return new LegacyGlobber(new GlobCache(packageDirectory, packageId, locator, syscalls,
-        threadPool));
+    return createLegacyGlobber(
+        new GlobCache(
+            packageDirectory,
+            packageId,
+            locator,
+            syscalls,
+            threadPool,
+            maxDirectoriesToEagerlyVisitInGlobbing));
+  }
+
+  /** Returns a new {@link LegacyGlobber}. */
+  public static LegacyGlobber createLegacyGlobber(GlobCache globCache) {
+    return new LegacyGlobber(globCache, /*sort=*/ true);
+  }
+
+  /**
+   * Returns a new {@link LegacyGlobber}, the same as in {@link #createLegacyGlobber}, except that
+   * the implementation of {@link Globber#fetch} intentionally breaks the contract and doesn't
+   * return sorted results.
+   */
+  public LegacyGlobber createLegacyGlobberThatDoesntSort(
+      Path packageDirectory,
+      PackageIdentifier packageId,
+      CachingPackageLocator locator) {
+    return new LegacyGlobber(
+        new GlobCache(
+            packageDirectory,
+            packageId,
+            locator,
+            syscalls,
+            threadPool,
+            maxDirectoriesToEagerlyVisitInGlobbing),
+        /*sort=*/ false);
   }
 
   @Nullable
@@ -1493,7 +1553,8 @@ public final class PackageFactory {
         builder.put(function.getName(), function);
       }
     }
-    return new ClassObject.SkylarkClassObject(builder.build(), "no native function or rule '%s'");
+    return SkylarkClassObjectConstructor.STRUCT.create(
+        builder.build(), "no native function or rule '%s'");
   }
 
   private void buildPkgEnv(Environment pkgEnv, PackageContext context, RuleFactory ruleFactory) {
@@ -1567,13 +1628,14 @@ public final class PackageFactory {
     StoredEventHandler eventHandler = new StoredEventHandler();
 
     try (Mutability mutability = Mutability.create("package %s", packageId)) {
-      Environment pkgEnv = Environment.builder(mutability)
-          .setGlobals(Environment.BUILD)
-          .setEventHandler(eventHandler)
-          .setImportedExtensions(imports)
-          .setToolsRepository(ruleClassProvider.getToolsRepository())
-          .setPhase(Phase.LOADING)
-          .build();
+      Environment pkgEnv =
+          Environment.builder(mutability)
+              .setGlobals(Environment.DEFAULT_GLOBALS)
+              .setEventHandler(eventHandler)
+              .setImportedExtensions(imports)
+              .setToolsRepository(ruleClassProvider.getToolsRepository())
+              .setPhase(Phase.LOADING)
+              .build();
 
       pkgBuilder.setFilename(buildFilePath)
           .setMakeEnv(pkgMakeEnv)
@@ -1643,12 +1705,13 @@ public final class PackageFactory {
     // strategy would be to crawl the ast and tag statements whose execution cannot involve globs -
     // these can be executed and their impact on the resulting package can be saved.
     try (Mutability mutability = Mutability.create("prefetchGlobs for %s", packageId)) {
-      Environment pkgEnv = Environment.builder(mutability)
-          .setGlobals(Environment.BUILD)
-          .setEventHandler(NullEventHandler.INSTANCE)
-          .setToolsRepository(ruleClassProvider.getToolsRepository())
-          .setPhase(Phase.LOADING)
-          .build();
+      Environment pkgEnv =
+          Environment.builder(mutability)
+              .setGlobals(Environment.DEFAULT_GLOBALS)
+              .setEventHandler(NullEventHandler.INSTANCE)
+              .setToolsRepository(ruleClassProvider.getToolsRepository())
+              .setPhase(Phase.LOADING)
+              .build();
 
       Package.Builder pkgBuilder = new Package.Builder(packageBuilderHelper.createFreshPackage(
           packageId, ruleClassProvider.getRunfilesPrefix()));

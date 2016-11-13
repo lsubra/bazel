@@ -45,10 +45,7 @@ public final class LocalResourceContainer {
       "assets",
       "assets_dir",
       "inline_constants",
-      "exports_manifest",
-      "application_id",
-      "version_name",
-      "version_code"
+      "exports_manifest"
   };
 
   /**
@@ -167,7 +164,7 @@ public final class LocalResourceContainer {
       for (TransitiveInfoCollection target : targets) {
         for (Artifact file : target.getProvider(FileProvider.class).getFilesToBuild()) {
           PathFragment packageFragment = file.getArtifactOwner().getLabel()
-              .getPackageIdentifier().getPathFragment();
+              .getPackageIdentifier().getSourceRoot();
           PathFragment packageRelativePath =
               file.getRootRelativePath().relativeTo(packageFragment);
           if (packageRelativePath.startsWith(assetsDir)) {
@@ -196,7 +193,7 @@ public final class LocalResourceContainer {
       for (FileProvider target : targets) {
         for (Artifact file : target.getFilesToBuild()) {
           PathFragment packageFragment = file.getArtifactOwner().getLabel()
-              .getPackageIdentifier().getPathFragment();
+              .getPackageIdentifier().getSourceRoot();
           PathFragment packageRelativePath =
               file.getRootRelativePath().relativeTo(packageFragment);
           PathFragment resourceDir = findResourceDir(file);
@@ -239,7 +236,7 @@ public final class LocalResourceContainer {
         return null;
       }
       // TODO(bazel-team): Expand Fileset to verify, or remove Fileset as an option for resources.
-      if (artifact.isFileset()) {
+      if (artifact.isFileset() || artifact.isTreeArtifact()) {
         return fragment.subFragment(segmentCount - 1, segmentCount);
       }
 

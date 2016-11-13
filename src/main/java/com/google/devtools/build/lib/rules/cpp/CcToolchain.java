@@ -41,13 +41,14 @@ import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.License;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.rules.cpp.FdoSupport.FdoException;
+import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
-
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -55,6 +56,7 @@ import java.util.Map;
  * Implementation for the cc_toolchain rule.
  */
 public class CcToolchain implements RuleConfiguredTargetFactory {
+
   /**
    * This file (found under the sysroot) may be unconditionally included in every C/C++ compilation.
    */
@@ -62,7 +64,8 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
       new PathFragment("include/stdc-predef.h");
 
   @Override
-  public ConfiguredTarget create(RuleContext ruleContext) throws RuleErrorException {
+  public ConfiguredTarget create(RuleContext ruleContext)
+      throws RuleErrorException, InterruptedException {
     TransitiveInfoCollection lipoContextCollector =
         ruleContext.getPrerequisite(":lipo_context_collector", Mode.DONT_CHECK);
     if (lipoContextCollector != null
@@ -140,23 +143,23 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
     // Dynamic runtime inputs.
     TransitiveInfoCollection dynamicRuntimeLibDep = selectDep(ruleContext, "dynamic_runtime_libs",
         cppConfiguration.getDynamicRuntimeLibsLabel());
-    final NestedSet<Artifact> dynamicRuntimeLinkInputs;
-    final Artifact dynamicRuntimeLinkMiddleman;
+    NestedSet<Artifact> dynamicRuntimeLinkSymlinks;
+    List<Artifact> dynamicRuntimeLinkInputs = new ArrayList<>();
+    Artifact dynamicRuntimeLinkMiddleman;
     if (cppConfiguration.supportsEmbeddedRuntimes()) {
-      NestedSetBuilder<Artifact> dynamicRuntimeLinkInputsBuilder = NestedSetBuilder.stableOrder();
+      NestedSetBuilder<Artifact> dynamicRuntimeLinkSymlinksBuilder = NestedSetBuilder.stableOrder();
       for (Artifact artifact : dynamicRuntimeLibDep
           .getProvider(FileProvider.class).getFilesToBuild()) {
         if (CppHelper.SHARED_LIBRARY_FILETYPES.matches(artifact.getFilename())) {
-          dynamicRuntimeLinkInputsBuilder.add(SolibSymlinkAction.getCppRuntimeSymlink(
+          dynamicRuntimeLinkInputs.add(artifact);
+          dynamicRuntimeLinkSymlinksBuilder.add(SolibSymlinkAction.getCppRuntimeSymlink(
               ruleContext, artifact, runtimeSolibDirBase,
-              ruleContext.getConfiguration()).getArtifact());
-        } else {
-          dynamicRuntimeLinkInputsBuilder.add(artifact);
+              ruleContext.getConfiguration()));
         }
       }
-      dynamicRuntimeLinkInputs = dynamicRuntimeLinkInputsBuilder.build();
+      dynamicRuntimeLinkSymlinks = dynamicRuntimeLinkSymlinksBuilder.build();
     } else {
-      dynamicRuntimeLinkInputs = NestedSetBuilder.emptySet(Order.STABLE_ORDER);
+      dynamicRuntimeLinkSymlinks = NestedSetBuilder.emptySet(Order.STABLE_ORDER);
     }
 
     if (!dynamicRuntimeLinkInputs.isEmpty()) {
@@ -164,7 +167,7 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
           CppHelper.getAggregatingMiddlemanForCppRuntimes(
               ruleContext,
               purposePrefix + "dynamic_runtime_link",
-              dynamicRuntimeLibDep,
+              dynamicRuntimeLinkInputs,
               runtimeSolibDirBase,
               ruleContext.getConfiguration());
       dynamicRuntimeLinkMiddleman = dynamicRuntimeLinkMiddlemanSet.isEmpty()
@@ -174,7 +177,7 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
     }
 
     Preconditions.checkState(
-        (dynamicRuntimeLinkMiddleman == null) == dynamicRuntimeLinkInputs.isEmpty());
+        (dynamicRuntimeLinkMiddleman == null) == dynamicRuntimeLinkSymlinks.isEmpty());
 
     CppCompilationContext.Builder contextBuilder =
         new CppCompilationContext.Builder(ruleContext);
@@ -186,6 +189,18 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
     boolean supportsParamFiles = ruleContext.attributes().get("supports_param_files", BOOLEAN);
     boolean supportsHeaderParsing =
         ruleContext.attributes().get("supports_header_parsing", BOOLEAN);
+
+    NestedSetBuilder<Pair<String, String>> coverageEnvironment = NestedSetBuilder.compileOrder();
+
+    coverageEnvironment.add(Pair.of(
+        "COVERAGE_GCOV_PATH", cppConfiguration.getGcovExecutable().getPathString()));
+    if (cppConfiguration.getFdoInstrument() != null) {
+      coverageEnvironment.add(Pair.of(
+          "FDO_DIR", cppConfiguration.getFdoInstrument().getPathString()));
+    }
+
+    Artifact linkDynamicLibraryTool = getLinkDynamicLibraryTool(ruleContext);
+
     CcToolchainProvider provider =
         new CcToolchainProvider(
             cppConfiguration,
@@ -199,14 +214,17 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
             libcLink,
             staticRuntimeLinkInputs,
             staticRuntimeLinkMiddleman,
-            dynamicRuntimeLinkInputs,
+            dynamicRuntimeLinkSymlinks,
             dynamicRuntimeLinkMiddleman,
             runtimeSolibDir,
             context,
             supportsParamFiles,
             supportsHeaderParsing,
             getBuildVariables(ruleContext),
-            getBuiltinIncludes(ruleContext));
+            getBuiltinIncludes(ruleContext),
+            coverageEnvironment.build(),
+            linkDynamicLibraryTool,
+            getEnvironment(ruleContext));
     RuleConfiguredTargetBuilder builder =
         new RuleConfiguredTargetBuilder(ruleContext)
             .add(CcToolchainProvider.class, provider)
@@ -236,6 +254,10 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
     return builder.build();
   }
 
+  private Artifact getLinkDynamicLibraryTool(RuleContext ruleContext) {
+    return ruleContext.getPrerequisiteArtifact("$link_dynamic_library_tool", Mode.TARGET);
+  }
+
   private ImmutableList<Artifact> getBuiltinIncludes(RuleContext ruleContext) {
     ImmutableList.Builder<Artifact> result = ImmutableList.builder();
     for (Artifact artifact : inputsForLibc(ruleContext)) {
@@ -262,12 +284,20 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
         .build();
   }
 
-  private NestedSet<Artifact> fullInputsForLink(RuleContext ruleContext, NestedSet<Artifact> link) {
+  /**
+   * Returns the crosstool-derived link action inputs for a given rule. Adds the given set of
+   * artifacts as extra inputs.
+   */
+  protected NestedSet<Artifact> fullInputsForLink(
+      RuleContext ruleContext, NestedSet<Artifact> link) {
     return NestedSetBuilder.<Artifact>stableOrder()
         .addTransitive(link)
         .addTransitive(AnalysisUtils.getMiddlemanFor(ruleContext, ":libc_top"))
-        .add(ruleContext.getAnalysisEnvironment().getEmbeddedToolArtifact(
-            CppRuleClasses.BUILD_INTERFACE_SO))
+        .add(getLinkDynamicLibraryTool(ruleContext))
+        .add(
+            ruleContext
+                .getAnalysisEnvironment()
+                .getEmbeddedToolArtifact(CppRuleClasses.BUILD_INTERFACE_SO))
         .build();
   }
 
@@ -304,10 +334,22 @@ public class CcToolchain implements RuleConfiguredTargetFactory {
   }
 
   /**
-   * Returns a map that should be templated into the crosstool as build variables.  Is meant to
+   * Returns a map that should be templated into the crosstool as build variables. Is meant to
    * be overridden by subclasses of CcToolchain.
+   *
+   * @param ruleContext the rule context
    */
   protected Map<String, String> getBuildVariables(RuleContext ruleContext) {
+    return ImmutableMap.<String, String>of();
+  }
+
+  /**
+   * Returns a map of environment variables to be added to the compile actions created for this
+   * toolchain. Ideally, this will get replaced by features, which also allow setting env variables.
+   *
+   * @param ruleContext the rule context
+   */
+  protected ImmutableMap<String, String> getEnvironment(RuleContext ruleContext) {
     return ImmutableMap.<String, String>of();
   }
 }

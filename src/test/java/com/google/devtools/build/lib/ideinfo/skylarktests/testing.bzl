@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http:#www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -37,6 +37,12 @@ def fail_test(env, msg):
 def assert_equals(env, expected, actual):
   if not expected == actual:
     fail_test(env, "'%s' != '%s'" % (expected, actual))
+
+def assert_contains_all(env, expected, actual):
+  for e in expected:
+    if e not in actual:
+      fail_test(env, "'%s' is not in '%s'" % (e, actual))
+
 
 def assert_true(env, condition, message):
   if not condition:

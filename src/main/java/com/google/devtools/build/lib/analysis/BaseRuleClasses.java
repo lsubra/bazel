@@ -29,6 +29,7 @@ import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.analysis.constraints.EnvironmentRule;
@@ -44,20 +45,12 @@ import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 import com.google.devtools.build.lib.packages.TestSize;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileTypeSet;
-
 import java.util.List;
 
 /**
  * Rule class definitions used by (almost) every rule.
  */
 public class BaseRuleClasses {
-  /**
-   * Label of the pseudo-filegroup that contains all the targets that are needed
-   * for running tests in coverage mode.
-   */
-  private static final Label COVERAGE_SUPPORT_LABEL =
-      Label.parseAbsoluteUnchecked("//tools/defaults:coverage");
-
   private static final Attribute.ComputedDefault testonlyDefault =
       new Attribute.ComputedDefault() {
         @Override
@@ -91,43 +84,10 @@ public class BaseRuleClasses {
     }
   };
 
-  private static final LateBoundLabelList<BuildConfiguration> COVERAGE_SUPPORT =
-      new LateBoundLabelList<BuildConfiguration>(ImmutableList.of(COVERAGE_SUPPORT_LABEL)) {
-        @Override
-        public List<Label> resolve(Rule rule, AttributeMap attributes,
-            BuildConfiguration configuration) {
-          return configuration.isCodeCoverageEnabled()
-              ? ImmutableList.copyOf(configuration.getCoverageLabels())
-              : ImmutableList.<Label>of();
-        }
-      };
-
-  private static final LateBoundLabelList<BuildConfiguration> GCOV =
-      new LateBoundLabelList<BuildConfiguration>(ImmutableList.of(COVERAGE_SUPPORT_LABEL)) {
-        @Override
-        public List<Label> resolve(Rule rule, AttributeMap attributes,
-            BuildConfiguration configuration) {
-          return configuration.isCodeCoverageEnabled()
-              ? ImmutableList.copyOf(configuration.getGcovLabels())
-              : ImmutableList.<Label>of();
-        }
-      };
-
-  private static final LateBoundLabelList<BuildConfiguration> COVERAGE_REPORT_GENERATOR =
-      new LateBoundLabelList<BuildConfiguration>(ImmutableList.of(COVERAGE_SUPPORT_LABEL)) {
-        @Override
-        public List<Label> resolve(Rule rule, AttributeMap attributes,
-            BuildConfiguration configuration) {
-          return configuration.isCodeCoverageEnabled()
-              ? ImmutableList.copyOf(configuration.getCoverageReportGeneratorLabels())
-              : ImmutableList.<Label>of();
-        }
-      };
-
   /**
    * Implementation for the :run_under attribute.
    */
-  private static final LateBoundLabel<BuildConfiguration> RUN_UNDER =
+  public static final LateBoundLabel<BuildConfiguration> RUN_UNDER =
       new LateBoundLabel<BuildConfiguration>() {
         @Override
         public Label resolve(Rule rule, AttributeMap attributes,
@@ -166,19 +126,19 @@ public class BaseRuleClasses {
           .add(attr("shard_count", INTEGER).value(-1))
           .add(attr("local", BOOLEAN).value(false).taggable()
               .nonconfigurable("policy decision: should be consistent across configurations"))
-          .add(attr("args", STRING_LIST)
-              .nonconfigurable("policy decision: should be consistent across configurations"))
+          .add(attr("args", STRING_LIST))
+          // Input files for every test action
           .add(attr("$test_runtime", LABEL_LIST).cfg(HOST).value(ImmutableList.of(
               env.getToolsLabel("//tools/test:runtime"))))
-
-          // TODO(bazel-team): TestActions may need to be run with coverage, so all tests
-          // implicitly depend on crosstool, which provides gcov.  We could add gcov to
-          // InstrumentedFilesProvider.getInstrumentationMetadataFiles() (or a new method) for
-          // all the test rules that have C++ in their transitive closure. Then this could go.
-          .add(attr(":gcov", LABEL_LIST).cfg(HOST).value(GCOV))
-          .add(attr(":coverage_support", LABEL_LIST).cfg(HOST).value(COVERAGE_SUPPORT))
-          .add(attr(":coverage_report_generator", LABEL_LIST).cfg(HOST)
-              .value(COVERAGE_REPORT_GENERATOR))
+          // Input files for test actions collecting code coverage
+          .add(attr("$coverage_support", LABEL)
+              .cfg(HOST)
+              .value(env.getLabel("//tools/defaults:coverage_support")))
+          // Used in the one-per-build coverage report generation action.
+          .add(attr("$coverage_report_generator", LABEL)
+              .cfg(HOST)
+              .value(env.getLabel("//tools/defaults:coverage_report_generator"))
+              .singleArtifact())
 
           // The target itself and run_under both run on the same machine. We use the DATA config
           // here because the run_under acts like a data dependency (e.g. no LIPO optimization).
@@ -201,6 +161,8 @@ public class BaseRuleClasses {
    */
   public static RuleClass.Builder commonCoreAndSkylarkAttributes(RuleClass.Builder builder) {
     return builder
+        .add(attr("name", STRING)
+            .nonconfigurable("Rule name"))
         // The visibility attribute is special: it is a nodep label, and loading the
         // necessary package groups is handled by {@link LabelVisitor#visitTargetVisibility}.
         // Package groups always have the null configuration so that they are not duplicated
@@ -292,6 +254,49 @@ public class BaseRuleClasses {
           .name("$rule")
           .type(RuleClassType.ABSTRACT)
           .ancestors(BaseRule.class)
+          .build();
+    }
+  }
+
+  public static final ImmutableSet<String> ALLOWED_RULE_CLASSES =
+      ImmutableSet.of("filegroup", "genrule", "Fileset");
+
+  /** A base rule for all binary rules. */
+  public static final class BinaryBaseRule implements RuleDefinition {
+    @Override
+    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+      return builder
+          .add(attr("args", STRING_LIST))
+          .add(attr("output_licenses", LICENSE))
+          .add(
+              attr("$is_executable", BOOLEAN)
+                  .value(true)
+                  .nonconfigurable("Called from RunCommand.isExecutable, which takes a Target"))
+          .build();
+    }
+
+    @Override
+    public Metadata getMetadata() {
+      return RuleDefinition.Metadata.builder()
+          .name("$binary_base_rule")
+          .type(RuleClassType.ABSTRACT)
+          .build();
+    }
+  }
+
+  /** Rule class for rules in error. */
+  public static final class ErrorRule implements RuleDefinition {
+    @Override
+    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+      return builder.publicByDefault().build();
+    }
+
+    @Override
+    public Metadata getMetadata() {
+      return RuleDefinition.Metadata.builder()
+          .name("$error_rule")
+          .type(RuleClassType.ABSTRACT)
+          .ancestors(BaseRuleClasses.BaseRule.class)
           .build();
     }
   }

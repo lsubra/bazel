@@ -29,13 +29,11 @@ import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.packages.BuildType;
-import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.rules.apple.Platform;
 import com.google.devtools.build.lib.rules.cpp.CcLibraryHelper.SourceCategory;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.DynamicMode;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.HeadersCheckingMode;
-import com.google.devtools.build.lib.rules.cpp.LinkerInputs.LibraryToLink;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesCollector;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesCollector.LocalMetadataCollector;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesProvider;
@@ -46,7 +44,6 @@ import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +86,7 @@ public final class CcCommon {
       CppRuleClasses.MODULE_MAPS,
       CppRuleClasses.MODULE_MAP_HOME_CWD,
       CppRuleClasses.HEADER_MODULE_INCLUDES_DEPENDENCIES,
+      CppRuleClasses.PRUNE_HEADER_MODULES,
       CppRuleClasses.INCLUDE_PATHS,
       CppRuleClasses.PIC,
       CppRuleClasses.PER_OBJECT_DEBUG_INFO,
@@ -359,14 +357,15 @@ public final class CcCommon {
     List<PathFragment> result = new ArrayList<>();
     // The package directory of the rule contributes includes. Note that this also covers all
     // non-subpackage sub-directories.
-    PathFragment rulePackage = ruleContext.getLabel().getPackageIdentifier().getPathFragment();
+    PathFragment rulePackage = ruleContext.getLabel().getPackageIdentifier()
+        .getPathUnderExecRoot();
     result.add(rulePackage);
 
     // Gather up all the dirs from the rule's srcs as well as any of the srcs outputs.
     if (hasAttribute("srcs", BuildType.LABEL_LIST)) {
       for (TransitiveInfoCollection src :
           ruleContext.getPrerequisitesIf("srcs", Mode.TARGET, FileProvider.class)) {
-        PathFragment packageDir = src.getLabel().getPackageIdentifier().getPathFragment();
+        PathFragment packageDir = src.getLabel().getPackageIdentifier().getPathUnderExecRoot();
         for (Artifact a : src.getProvider(FileProvider.class).getFilesToBuild()) {
           result.add(packageDir);
           // Attempt to gather subdirectories that might contain include files.
@@ -378,7 +377,7 @@ public final class CcCommon {
     // Add in any 'includes' attribute values as relative path fragments
     if (ruleContext.getRule().isAttributeValueExplicitlySpecified("includes")) {
       PathFragment packageFragment = ruleContext.getLabel().getPackageIdentifier()
-          .getPathFragment();
+          .getPathUnderExecRoot();
       // For now, anything with an 'includes' needs a blanket declaration
       result.add(packageFragment.getRelative("**"));
     }
@@ -388,7 +387,7 @@ public final class CcCommon {
   List<PathFragment> getSystemIncludeDirs() {
     List<PathFragment> result = new ArrayList<>();
     PackageIdentifier packageIdentifier = ruleContext.getLabel().getPackageIdentifier();
-    PathFragment packageFragment = packageIdentifier.getPathFragment();
+    PathFragment packageFragment = packageIdentifier.getPathUnderExecRoot();
     for (String includesAttr : ruleContext.attributes().get("includes", Type.STRING_LIST)) {
       includesAttr = ruleContext.expandMakeVariables("includes", includesAttr);
       if (includesAttr.startsWith("/")) {
@@ -419,18 +418,6 @@ public final class CcCommon {
                 + "' not below the relative path of its package '"
                 + packageFragment
                 + "'. This will be an error in the future");
-        // TODO(janakr): Add a link to a page explaining the problem and fixes?
-      } else if (packageIdentifier.getRepository().isMain()
-          && !includesPath.startsWith(RuleClass.THIRD_PARTY_PREFIX)) {
-        ruleContext.attributeWarning(
-            "includes",
-            "'"
-                + includesAttr
-                + "' resolves to '"
-                + includesPath
-                + "' not in '"
-                + RuleClass.THIRD_PARTY_PREFIX
-                + "'. This will be an error in the future");
       }
       result.add(includesPath);
       result.add(ruleContext.getConfiguration().getGenfilesFragment().getRelative(includesPath));
@@ -457,7 +444,9 @@ public final class CcCommon {
       }
     }
     prerequisites.addTransitive(context.getDeclaredIncludeSrcs());
-    prerequisites.addTransitive(context.getAdditionalInputs(CppHelper.usePic(ruleContext, false)));
+    prerequisites.addTransitive(context.getAdditionalInputs());
+    prerequisites.addTransitive(context.getTransitiveModules(true));
+    prerequisites.addTransitive(context.getTransitiveModules(false));
     return prerequisites.build();
   }
 
@@ -475,8 +464,8 @@ public final class CcCommon {
    * @param preserveName true if filename should be preserved, false - mangled.
    * @return mangled symlink artifact.
    */
-  public LibraryToLink getDynamicLibrarySymlink(Artifact library, boolean preserveName) {
-    return SolibSymlinkAction.getDynamicLibrarySymlink(
+  public Artifact getDynamicLibrarySymlink(Artifact library, boolean preserveName) {
+    return  SolibSymlinkAction.getDynamicLibrarySymlink(
         ruleContext, library, preserveName, true, ruleContext.getConfiguration());
   }
 
@@ -497,7 +486,17 @@ public final class CcCommon {
         ? InstrumentedFilesProviderImpl.EMPTY
         : InstrumentedFilesCollector.collect(
             ruleContext, CppRuleClasses.INSTRUMENTATION_SPEC, CC_METADATA_COLLECTOR, files,
+            CppHelper.getGcovFilesIfNeeded(ruleContext),
+            CppHelper.getCoverageEnvironmentIfNeeded(ruleContext),
             withBaselineCoverage);
+  }
+
+  private static String getHostOrNonHostFeature(RuleContext ruleContext) {
+    if (ruleContext.getConfiguration().isHostConfiguration()) {
+      return "host";
+    } else {
+      return "nonhost";
+    }
   }
 
   /**
@@ -529,9 +528,12 @@ public final class CcCommon {
     }
     Set<String> unsupportedFeatures = unsupportedFeaturesBuilder.build();
     ImmutableSet.Builder<String> requestedFeatures = ImmutableSet.builder();
-    for (String feature : Iterables.concat(
-        ImmutableSet.of(toolchain.getCompilationMode().toString()), DEFAULT_FEATURES,
-        ruleContext.getFeatures())) {
+    for (String feature :
+        Iterables.concat(
+            ImmutableSet.of(toolchain.getCompilationMode().toString()),
+            ImmutableSet.of(getHostOrNonHostFeature(ruleContext)),
+            DEFAULT_FEATURES,
+            ruleContext.getFeatures())) {
       if (!unsupportedFeatures.contains(feature)) {
         requestedFeatures.add(feature);
       }

@@ -18,13 +18,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
-import com.google.devtools.build.lib.analysis.RedirectChaser;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.EmptyToNullLabelConverter;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.Fragment;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.LabelConverter;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDepsConverter;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDepsMode;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
@@ -33,12 +30,13 @@ import com.google.devtools.build.lib.analysis.config.InvalidConfigurationExcepti
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.Attribute.SplitTransition;
+import com.google.devtools.build.lib.rules.cpp.CppOptions.DynamicModeConverter;
+import com.google.devtools.build.lib.rules.cpp.CppOptions.DynamicModeFlag;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsParsingException;
-
 import java.util.List;
 import java.util.Set;
 
@@ -64,6 +62,15 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
   public static final class IncrementalDexingConverter extends EnumConverter<IncrementalDexing> {
     public IncrementalDexingConverter() {
       super(IncrementalDexing.class, "incremental dexing option");
+    }
+  }
+
+  /**
+   * Converter for {@link ApkSigningMethod}.
+   */
+  public static final class ApkSigningMethodConverter extends EnumConverter<ApkSigningMethod> {
+    public ApkSigningMethodConverter() {
+      super(ApkSigningMethod.class, "apk signing method");
     }
   }
 
@@ -98,6 +105,16 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
   }
 
   /**
+   * Converter for {@link AndroidManifestMerger}
+   */
+  public static final class AndroidManifestMergerConverter
+      extends EnumConverter<AndroidManifestMerger> {
+    public AndroidManifestMergerConverter() {
+      super(AndroidManifestMerger.class, "android manifest merger");
+    }
+  }
+
+  /**
    * Value used to avoid multiple configurations from conflicting.
    *
    * <p>This is set to {@code ANDROID} in Android configurations and to {@code MAIN} otherwise. This
@@ -124,6 +141,49 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
     MONODEX, MULTIDEX_UNSHARDED, MULTIDEX_SHARDED
   }
 
+  /**
+   * Which APK signing method to use with the debug key for rules that build APKs.
+   *
+   * <ul>
+   * <li>LEGACY_V1 uses the signer inside the deprecated apkbuilder tool.
+   * <li>V1 uses the apksigner attribute from the android_sdk and signs the APK as a JAR.
+   * <li>V2 uses the apksigner attribute from the android_sdk and signs the APK according to the APK
+   * Signing Schema V2 that is only supported on Android N and later.
+   * </ul>
+   */
+  public enum ApkSigningMethod {
+    LEGACY_V1(true, false, false),
+    V1(false, true, false),
+    V2(false, false, true),
+    V1_V2(false, true, true);
+
+    private final boolean signLegacy;
+    private final boolean signV1;
+    private final boolean signV2;
+
+    ApkSigningMethod(boolean signLegacy, boolean signV1, boolean signV2) {
+      // If signLegacy is true, the other two values will be ignored.
+      this.signLegacy = signLegacy;
+      this.signV1 = signV1;
+      this.signV2 = signV2;
+    }
+
+    /** Whether to sign with the signer inside the deprecated apkbuilder tool. */
+    public boolean signLegacy() {
+      return signLegacy;
+    }
+
+    /** Whether to JAR sign the APK with the apksigner tool. */
+    public boolean signV1() {
+      return signV1;
+    }
+
+    /** Wheter to sign the APK with the apksigner tool with APK Signature Schema V2. */
+    public boolean signV2() {
+      return signV2;
+    }
+  }
+
   /** When to use incremental dexing (using {@link DexArchiveProvider}). */
   private enum IncrementalDexing {
     OFF(),
@@ -136,6 +196,30 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
 
     private IncrementalDexing(AndroidBinaryType... binaryTypes) {
       this.binaryTypes = ImmutableSet.copyOf(binaryTypes);
+    }
+  }
+
+  /** Types of android manifest mergers. */
+  public enum AndroidManifestMerger {
+    LEGACY,
+    ANDROID;
+
+    public static List<String> getAttributeValues() {
+      return ImmutableList.of(LEGACY.name().toLowerCase(), ANDROID.name().toLowerCase(),
+          getRuleAttributeDefault());
+    }
+
+    public static String getRuleAttributeDefault() {
+      return "auto";
+    }
+
+    public static AndroidManifestMerger fromString(String value) {
+      for (AndroidManifestMerger merger : AndroidManifestMerger.values()) {
+        if (merger.name().equalsIgnoreCase(value)) {
+          return merger;
+        }
+      }
+      return null;
     }
   }
 
@@ -179,14 +263,18 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
     )
     public String cppCompiler;
 
-    @Option(name = "strict_android_deps",
-        allowMultiple = false,
-        defaultValue = "default",
-        converter = StrictDepsConverter.class,
-        category = "semantics",
-        help = "If true, checks that an Android target explicitly declares all directly used "
-            + "targets as dependencies.")
-    public StrictDepsMode strictDeps;
+    @Option(
+      name = "android_dynamic_mode",
+      defaultValue = "default",
+      converter = DynamicModeConverter.class,
+      category = "undocumented",
+      help =
+        "Determines whether C++ deps of Android rules will be linked dynamically when a cc_binary "
+            + "does not explicitly create a shared library. 'default' means blaze will choose "
+            + "whether to link dynamically.  'fully' means all libraries will be linked "
+            + "dynamically. 'off' means that all libraries will be linked in mostly static mode."
+    )
+    public DynamicModeFlag dynamicMode;
 
     // Label of filegroup combining all Android tools used as implicit dependencies of
     // android_* rules
@@ -196,13 +284,6 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
             converter = LabelConverter.class,
             help = "Specifies Android SDK/platform that is used to build Android applications.")
     public Label sdk;
-
-    @Option(name = "legacy_android_native_support",
-        defaultValue = "true",
-        category = "semantics",
-        help = "Switches back to old native support for android_binaries. Disable to link together "
-            + "native deps of android_binaries into a single .so by default.")
-    public boolean legacyNativeSupport;
 
     // TODO(bazel-team): Maybe merge this with --android_cpu above.
     @Option(name = "fat_apk_cpu",
@@ -228,6 +309,15 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
         help = "Enables sanity checks for Jack and Jill compilation.")
     public boolean jackSanityChecks;
 
+    // For desugaring lambdas when compiling Java 8 sources. Do not use on the command line.
+    // The idea is that once this option works, we'll flip the default value in a config file, then
+    // once it is proven that it works, remove it from Bazel and said config file.
+    @Option(name = "experimental_desugar_for_android",
+        defaultValue = "false",
+        category = "undocumented",
+        help = "Whether to desugar Java 8 bytecode before dexing.")
+    public boolean desugarJava8;
+
     @Option(name = "experimental_incremental_dexing",
         defaultValue = "off",
         category = "undocumented",
@@ -244,6 +334,14 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
         help = "Does most of the work for dexing separately for each Jar file.  Incompatible with "
             + "Jack and Jill.")
     public boolean incrementalDexing;
+
+    // Do not use on the command line and instead flip this default globally.
+    @Option(name = "host_incremental_dexing",
+        defaultValue = "false",
+        category = "hidden",
+        help = "Does most of the work for dexing separately for each Jar file that's part of an "
+            + "Android binary built in host configuration.")
+    public boolean hostIncrementalDexing;
 
     // Do not use on the command line.
     // The idea is that this option lets us gradually turn on incremental dexing for different
@@ -277,6 +375,14 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
         help = "dx flags supported in incremental dexing.")
     public List<String> dexoptsSupportedInIncrementalDexing;
 
+    @Option(
+      name = "experimental_android_rewrite_dexes_with_rex",
+      defaultValue = "false",
+      category = "undocumented",
+      help = "use rex tool to rewrite dex files"
+    )
+    public boolean useRexToCompressDexFiles;
+
     @Option(name = "experimental_allow_android_library_deps_without_srcs",
         defaultValue = "true",
         category = "undocumented",
@@ -289,6 +395,46 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
         category = "undocumented",
         help = "Enables resource shrinking for android_binary APKs that use proguard.")
     public boolean useAndroidResourceShrinking;
+
+    @Option(name = "android_manifest_merger",
+        defaultValue = "legacy",
+        category = "semantics",
+        converter = AndroidManifestMergerConverter.class,
+        help = "Selects the manifest merger to use for android_binary rules. Flag to help the"
+            + "transition to the Android manifest merger from the legacy merger.")
+    public AndroidManifestMerger manifestMerger;
+
+    // Do not use on the command line.
+    // The idea is that once this option works, we'll flip the default value in a config file, then
+    // once it is proven that it works, remove it from Bazel and said config file.
+    @Option(name = "experimental_use_rclass_generator",
+        defaultValue = "false",
+        category = "undocumented",
+        help = "Use the specialized R class generator to build the final app and lib R classes.")
+    public boolean useRClassGenerator;
+
+    // Do not use on the command line.
+    // The idea is that once this option works, we'll flip the default value in a config file, then
+    // once it is proven that it works, remove it from Bazel and said config file.
+    @Option(name = "experimental_use_parallel_android_resource_processing",
+      defaultValue = "false",
+      category = "undocumented",
+      help = "Process android_library resources with higher parallelism. Generates library "
+              + "R classes from a merge action, separately from aapt.")
+    public boolean useParallelResourceProcessing;
+
+    @Option(name = "apk_signing_method",
+        converter = ApkSigningMethodConverter.class,
+        defaultValue = "legacy_v1",
+        category = "undocumented",
+        help = "Implementation to use to sign APKs")
+    public ApkSigningMethod apkSigningMethod;
+
+    @Option(name = "use_singlejar_apkbuilder",
+        defaultValue = "false",
+        category = "undocumented",
+        help = "Build Android APKs with SingleJar.")
+    public boolean useSingleJarApkBuilder;
 
     @Override
     public void addAllLabels(Multimap<String, Label> labelMap) {
@@ -304,6 +450,14 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
       Options host = (Options) super.getHost(fallback);
       host.androidCrosstoolTop = androidCrosstoolTop;
       host.sdk = sdk;
+      host.fatApkCpus = ImmutableList.<String>of(); // Fat APK archs don't apply to the host.
+
+      host.desugarJava8 = desugarJava8;
+      host.incrementalDexing = hostIncrementalDexing;
+      host.incrementalDexingBinaries = incrementalDexingBinaries;
+      host.nonIncrementalPerTargetDexopts = nonIncrementalPerTargetDexopts;
+      host.dexoptsSupportedInIncrementalDexing = dexoptsSupportedInIncrementalDexing;
+      host.dexingStrategy = dexingStrategy;
       return host;
     }
 
@@ -324,14 +478,10 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
   public static class Loader implements ConfigurationFragmentFactory {
     @Override
     public Fragment create(ConfigurationEnvironment env, BuildOptions buildOptions)
-        throws InvalidConfigurationException {
+        throws InvalidConfigurationException, InterruptedException {
       AndroidConfiguration.Options androidOptions =
           buildOptions.get(AndroidConfiguration.Options.class);
-      Label androidSdk = RedirectChaser.followRedirects(env, androidOptions.sdk, "android_sdk");
-      if (androidSdk == null) {
-        return null;
-      }
-      return new AndroidConfiguration(buildOptions.get(Options.class), androidSdk);
+      return new AndroidConfiguration(buildOptions.get(Options.class), androidOptions.sdk);
     }
 
     @Override
@@ -346,27 +496,28 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
   }
 
   private final Label sdk;
-  private final StrictDepsMode strictDeps;
-  private final boolean legacyNativeSupport;
   private final String cpu;
   private final boolean incrementalNativeLibs;
-  private final boolean fatApk;
   private final ConfigurationDistinguisher configurationDistinguisher;
   private final boolean useJackForDexing;
   private final boolean jackSanityChecks;
   private final ImmutableSet<AndroidBinaryType> incrementalDexingBinaries;
   private final ImmutableList<String> dexoptsSupportedInIncrementalDexing;
   private final ImmutableList<String> targetDexoptsThatPreventIncrementalDexing;
+  private final boolean desugarJava8;
+  private final boolean useRexToCompressDexFiles;
   private final boolean allowAndroidLibraryDepsWithoutSrcs;
   private final boolean useAndroidResourceShrinking;
+  private final boolean useRClassGenerator;
+  private final boolean useParallelResourceProcessing;
+  private final AndroidManifestMerger manifestMerger;
+  private final ApkSigningMethod apkSigningMethod;
+  private final boolean useSingleJarApkBuilder;
 
   AndroidConfiguration(Options options, Label androidSdk) {
     this.sdk = androidSdk;
     this.incrementalNativeLibs = options.incrementalNativeLibs;
-    this.strictDeps = options.strictDeps;
-    this.legacyNativeSupport = options.legacyNativeSupport;
     this.cpu = options.cpu;
-    this.fatApk = !options.fatApkCpus.isEmpty();
     this.configurationDistinguisher = options.configurationDistinguisher;
     this.useJackForDexing = options.useJackForDexing;
     this.jackSanityChecks = options.jackSanityChecks;
@@ -379,8 +530,15 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
         ImmutableList.copyOf(options.dexoptsSupportedInIncrementalDexing);
     this.targetDexoptsThatPreventIncrementalDexing =
         ImmutableList.copyOf(options.nonIncrementalPerTargetDexopts);
+    this.desugarJava8 = options.desugarJava8;
     this.allowAndroidLibraryDepsWithoutSrcs = options.allowAndroidLibraryDepsWithoutSrcs;
     this.useAndroidResourceShrinking = options.useAndroidResourceShrinking;
+    this.useRClassGenerator = options.useRClassGenerator;
+    this.useParallelResourceProcessing = options.useParallelResourceProcessing;
+    this.manifestMerger = options.manifestMerger;
+    this.apkSigningMethod = options.apkSigningMethod;
+    this.useSingleJarApkBuilder = options.useSingleJarApkBuilder;
+    this.useRexToCompressDexFiles = options.useRexToCompressDexFiles;
   }
 
   public String getCpu() {
@@ -389,18 +547,6 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
 
   public Label getSdk() {
     return sdk;
-  }
-
-  public boolean getLegacyNativeSupport() {
-    return legacyNativeSupport;
-  }
-
-  public StrictDepsMode getStrictDeps() {
-    return strictDeps;
-  }
-
-  public boolean isFatApk() {
-    return fatApk;
   }
 
   /**
@@ -445,12 +591,40 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
     return targetDexoptsThatPreventIncrementalDexing;
   }
 
+  public boolean desugarJava8() {
+    return desugarJava8;
+  }
+
+  public boolean useRexToCompressDexFiles() {
+    return useRexToCompressDexFiles;
+  }
+
   public boolean allowSrcsLessAndroidLibraryDeps() {
     return allowAndroidLibraryDepsWithoutSrcs;
   }
 
   public boolean useAndroidResourceShrinking() {
     return useAndroidResourceShrinking;
+  }
+
+  public boolean useRClassGenerator() {
+    return useRClassGenerator;
+  }
+
+  public boolean useParallelResourceProcessing() {
+    return useParallelResourceProcessing;
+  }
+
+  public AndroidManifestMerger getManifestMerger() {
+    return manifestMerger;
+  }
+
+  public ApkSigningMethod getApkSigningMethod() {
+    return apkSigningMethod;
+  }
+
+  public boolean useSingleJarApkBuilder() {
+    return useSingleJarApkBuilder;
   }
 
   @Override

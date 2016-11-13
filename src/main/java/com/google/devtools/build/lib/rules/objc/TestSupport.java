@@ -14,8 +14,6 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import static com.google.devtools.build.lib.rules.objc.ObjcRuleClasses.SimulatorRule;
-
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
@@ -28,22 +26,20 @@ import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles.Builder;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
+import com.google.devtools.build.lib.analysis.TransitiveInfoProviderMap;
 import com.google.devtools.build.lib.analysis.actions.TemplateExpansionAction;
 import com.google.devtools.build.lib.analysis.actions.TemplateExpansionAction.Substitution;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
 import com.google.devtools.build.lib.rules.apple.DottedVersion;
+import com.google.devtools.build.lib.rules.objc.ObjcRuleClasses.SimulatorRule;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesProvider;
 import com.google.devtools.build.lib.rules.test.TestEnvironmentProvider;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.List;
-import java.util.Map;
-
 import javax.annotation.Nullable;
 
 /**
@@ -58,7 +54,8 @@ public class TestSupport {
 
   /**
    * Registers actions to create all files needed in order to actually run the test.
-   * @throws InterruptedException 
+   *
+   * @throws InterruptedException
    */
   public TestSupport registerTestRunnerActions() throws InterruptedException {
     registerTestScriptSubstitutionAction();
@@ -89,7 +86,7 @@ public class TestSupport {
             .add(Substitution.of("%(test_app_name)s", baseNameWithoutIpa(testBundleIpa)))
             .add(
                 Substitution.of("%(plugin_jars)s", Artifact.joinRootRelativePaths(":", plugins())));
-    
+
     substitutions.add(Substitution.ofSpaceSeparatedMap("%(test_env)s", testEnv));
 
     // testHarnessIpa is the app being tested in the case where testBundleIpa is a .xctest bundle.
@@ -127,7 +124,6 @@ public class TestSupport {
    */
   private ImmutableList<Substitution> substitutionsForSimulator() {
     ImmutableList.Builder<Substitution> substitutions = new ImmutableList.Builder<Substitution>()
-        .add(Substitution.of("%(iossim_path)s", iossim().getRunfilesPathString()))
         .add(Substitution.of("%(std_redirect_dylib_path)s",
             stdRedirectDylib().getRunfilesPathString()))
         .addAll(deviceSubstitutions().getSubstitutionsForTestRunnerScript());
@@ -171,10 +167,6 @@ public class TestSupport {
     } else {
       throw new IllegalStateException("Expected 0 or 1 files in xctest_app, got: " + files);
     }
-  }
-
-  private Artifact iossim() {
-    return ruleContext.getPrerequisiteArtifact(SimulatorRule.IOSSIM_ATTR, Mode.HOST);
   }
 
   private Artifact stdRedirectDylib() {
@@ -231,7 +223,6 @@ public class TestSupport {
         .addTransitiveArtifacts(plugins());
     if (!runWithLabDevice()) {
       runfilesBuilder
-          .addArtifact(iossim())
           .addArtifact(stdRedirectDylib())
           .addTransitiveArtifacts(deviceRunfiles())
           .addArtifacts(testRunner().asSet());
@@ -251,7 +242,7 @@ public class TestSupport {
    * Returns any additional providers that need to be exported to the rule context to the passed
    * builder.
    */
-  public Map<Class<? extends TransitiveInfoProvider>, TransitiveInfoProvider> getExtraProviders() {
+  public TransitiveInfoProviderMap getExtraProviders() {
     IosDeviceProvider deviceProvider =
         ruleContext.getPrerequisite(IosTest.TARGET_DEVICE, Mode.TARGET, IosDeviceProvider.class);
     DottedVersion xcodeVersion = deviceProvider.getXcodeVersion();
@@ -265,12 +256,11 @@ public class TestSupport {
 
     if (ruleContext.getConfiguration().isCodeCoverageEnabled()) {
       envBuilder.put("COVERAGE_GCOV_PATH",
-          ruleContext.getHostPrerequisiteArtifact(IosTest.GCOV_ATTR).getExecPathString());
+          ruleContext.getHostPrerequisiteArtifact(IosTest.OBJC_GCOV_ATTR).getExecPathString());
       envBuilder.put("APPLE_COVERAGE", "1");
     }
 
-    return ImmutableMap.<Class<? extends TransitiveInfoProvider>, TransitiveInfoProvider>of(
-        TestEnvironmentProvider.class, new TestEnvironmentProvider(envBuilder.build()));
+    return TransitiveInfoProviderMap.of(new TestEnvironmentProvider(envBuilder.build()));
   }
 
   /**

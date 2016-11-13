@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.vfs;
 
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
@@ -22,12 +23,12 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.util.StringCanonicalizer;
-
 import java.io.File;
 import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -87,7 +88,16 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
     for (int i = 0; i < segments.length; i++) {
       internedSegments[i] = StringCanonicalizer.intern(segments[i]);
     }
-    return new PathFragment(driveLetter, isAbsolute, segments);
+    return new PathFragment(driveLetter, isAbsolute, internedSegments);
+  }
+
+  /** Same as {@link #create(char, boolean, String[])}, except for {@link List}s of segments. */
+  public static PathFragment create(char driveLetter, boolean isAbsolute, List<String> segments) {
+    String[] internedSegments = new String[segments.size()];
+    for (int i = 0; i < segments.size(); i++) {
+      internedSegments[i] = StringCanonicalizer.intern(segments.get(i));
+    }
+    return new PathFragment(driveLetter, isAbsolute, internedSegments);
   }
 
   // We have 3 word-sized fields (segments, hashCode and path), and 2
@@ -260,6 +270,26 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
   }
 
   /**
+   * Returns the path string using '/' as the name-separator character, but do so in a way
+   * unambiguously recognizable as path. In other words, return "." for relative and empty paths,
+   * and prefix relative paths with one segment by "./".
+   *
+   * <p>In this way, a shell will always interpret such a string as path (absolute or relative to
+   * the working directory) and not as command to be searched for in the search path.
+   */
+  public String getCallablePathString() {
+    if (isAbsolute) {
+      return getPathString();
+    } else if (segmentCount() == 0) {
+      return ".";
+    } else if (segmentCount() == 1) {
+      return "." + SEPARATOR_CHAR + getPathString();
+    } else {
+      return getPathString();
+    }
+  }
+
+  /**
    * Returns a sequence consisting of the {@link #getSafePathString()} return of each item in
    * {@code fragments}.
    */
@@ -426,6 +456,20 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
   }
 
   /**
+   * Returns the file extension of this path, excluding the period, or "" if there is no extension.
+   */
+  public String getFileExtension() {
+    String baseName = getBaseName();
+
+    int lastIndex = baseName.lastIndexOf('.');
+    if (lastIndex != -1) {
+      return baseName.substring(lastIndex + 1);
+    }
+
+    return "";
+  }
+
+  /**
    * Returns a relative path fragment to this path, relative to
    * {@code ancestorDirectory}.
    * <p>
@@ -576,6 +620,10 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
    */
   String[] segments() {
     return segments;
+  }
+
+  public ImmutableList<String> getSegments() {
+    return ImmutableList.copyOf(segments);
   }
 
   public String windowsVolume() {

@@ -31,12 +31,10 @@ import com.google.devtools.build.lib.rules.python.PythonConfiguration;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
-
+import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-
-import java.util.Map;
 
 /**
  * Tests for {@link ConfigSetting}.
@@ -166,7 +164,6 @@ public class ConfigSettingTest extends BuildViewTestCase {
   public void testLateBoundOptionDefaults() throws Exception {
     String crosstoolCpuDefault = (String) getTargetConfiguration().getOptionValue("cpu");
     String crosstoolCompilerDefault = (String) getTargetConfiguration().getOptionValue("compiler");
-    String crosstoolLibcDefault = (String) getTargetConfiguration().getOptionValue("glibc");
 
     scratch.file("test/BUILD",
         "config_setting(",
@@ -174,16 +171,11 @@ public class ConfigSettingTest extends BuildViewTestCase {
         "    values = {",
         "        'cpu': '" + crosstoolCpuDefault + "',",
         "        'compiler': '" + crosstoolCompilerDefault + "',", //'gcc-4.4.0',",
-        "        'glibc': '" + crosstoolLibcDefault + "',", //'2.3.2',",
         "    })");
 
     assertTrue(getConfigMatchingProvider("//test:match").matches());
-    assertNull(flagDefault("cpu"));
-    assertNotNull(crosstoolCpuDefault);
     assertNull(flagDefault("compiler"));
     assertNotNull(crosstoolCompilerDefault);
-    assertNull(flagDefault("glibc"));
-    assertNotNull(crosstoolLibcDefault);
   }
 
   /**
@@ -241,6 +233,13 @@ public class ConfigSettingTest extends BuildViewTestCase {
     String crosstoolTop = TestConstants.TOOLS_REPOSITORY + "//tools/cpp:toolchain";
     scratchConfiguredTarget("a", "a",
         "config_setting(name='cs', values={'crosstool_top': '" + crosstoolTop + "'})",
+        "sh_library(name='a', srcs=['a.sh'], deps=select({':cs': []}))");
+  }
+
+  @Test
+  public void testSelectForDefaultGrteTop() throws Exception {
+    scratchConfiguredTarget("a", "a",
+        "config_setting(name='cs', values={'grte_top': 'default'})",
         "sh_library(name='a', srcs=['a.sh'], deps=select({':cs': []}))");
   }
 

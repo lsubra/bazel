@@ -26,6 +26,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * Implementation of the <code>allpaths()</code> function.
@@ -50,11 +51,15 @@ public class AllPathsFunction implements QueryFunction {
   }
 
   @Override
-  public <T> void eval(QueryEnvironment<T> env, QueryExpression expression, List<Argument> args,
+  public <T> void eval(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      QueryExpression expression,
+      List<Argument> args,
       Callback<T> callback) throws QueryException, InterruptedException {
 
-    Set<T> fromValue = QueryUtil.evalAll(env, args.get(0).getExpression());
-    Set<T> toValue = QueryUtil.evalAll(env, args.get(1).getExpression());
+    Set<T> fromValue = QueryUtil.evalAll(env, context, args.get(0).getExpression());
+    Set<T> toValue = QueryUtil.evalAll(env, context, args.get(1).getExpression());
 
     // Algorithm: compute "reachableFromX", the forward transitive closure of
     // the "from" set, then find the intersection of "reachableFromX" with the
@@ -75,6 +80,17 @@ public class AllPathsFunction implements QueryFunction {
       worklist = uniquifier.unique(Iterables.filter(reverseDeps, reachable));
       callback.process(worklist);
     }
+  }
+
+  @Override
+  public <T> void parEval(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      QueryExpression expression,
+      List<Argument> args,
+      ThreadSafeCallback<T> callback,
+      ForkJoinPool forkJoinPool) throws QueryException, InterruptedException {
+    eval(env, context, expression, args, callback);
   }
 
   /**

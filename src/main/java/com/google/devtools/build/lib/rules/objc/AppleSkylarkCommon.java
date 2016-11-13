@@ -15,7 +15,10 @@
 package com.google.devtools.build.lib.rules.objc;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
 import com.google.devtools.build.lib.rules.apple.AppleToolchain;
+import com.google.devtools.build.lib.rules.apple.Platform;
+import com.google.devtools.build.lib.rules.apple.Platform.PlatformType;
 import com.google.devtools.build.lib.rules.objc.ObjcProvider.Key;
 import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
@@ -24,8 +27,8 @@ import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
 import com.google.devtools.build.lib.syntax.BuiltinFunction;
 import com.google.devtools.build.lib.syntax.SkylarkDict;
 import com.google.devtools.build.lib.syntax.SkylarkSignatureProcessor;
-
 import java.util.Map.Entry;
+import javax.annotation.Nullable;
 
 /**
  * A class that exposes apple rule implementation internals to skylark.
@@ -37,7 +40,8 @@ import java.util.Map.Entry;
 public class AppleSkylarkCommon {
  
   @VisibleForTesting
-  public static final String BAD_KEY_ERROR = "Argument %s not a recognized key or 'providers'.";
+  public static final String BAD_KEY_ERROR = "Argument %s not a recognized key, 'providers',"
+      + " or 'direct_dep_providers'.";
 
   @VisibleForTesting
   public static final String BAD_SET_TYPE_ERROR =
@@ -54,7 +58,15 @@ public class AppleSkylarkCommon {
 
   @VisibleForTesting
   public static final String NOT_SET_ERROR = "Value for key %s must be a set, instead found %s.";
-  
+
+  @VisibleForTesting
+  public static final String MISSING_KEY_ERROR = "No value for required key %s was present.";
+
+  @Nullable
+  private SkylarkClassObject platformType;
+  @Nullable
+  private SkylarkClassObject platform;
+
   @SkylarkCallable(
       name = "apple_toolchain",
       doc = "Utilities for resolving items from the apple toolchain."
@@ -63,19 +75,50 @@ public class AppleSkylarkCommon {
     return new AppleToolchain();
   }
 
+  @SkylarkCallable(
+    name = "platform_type",
+    doc = "Returns a struct containing fields corresponding to Apple platform types: 'ios', "
+        + "'watchos', 'tvos', and 'macosx'. These values can be passed to methods that expect a "
+        + "platform type, like the 'apple' configuration fragment's 'multi_arch_platform' "
+        + "method. For example, ctx.fragments.apple.multi_arch_platform(apple_common."
+        + "platform_type.ios).",
+    structField = true
+  )
+  public SkylarkClassObject getPlatformTypeStruct() {
+    if (platformType == null) {
+      platformType = PlatformType.getSkylarkStruct();
+    }
+    return platformType;
+  }
+
+  @SkylarkCallable(
+      name = "platform",
+      doc = "Returns a struct containing fields corresponding to Apple platforms. These values "
+          + "can be passed to methods that expect a platform, like the 'apple' configuration "
+          + "fragment's 'sdk_version_for_platform' method. Each platform_type except for macosx "
+          + "has two platform types -- one for device, and one for simulator.",
+      structField = true
+  )
+  public SkylarkClassObject getPlatformStruct() {
+    if (platform == null) {
+      platform = Platform.getSkylarkStruct();
+    }
+    return platform;
+  }
+
   @SkylarkSignature(
     name = "new_objc_provider",
     objectType = AppleSkylarkCommon.class,
     returnType = ObjcProvider.class,
     doc = "Creates a new ObjcProvider instance.",
-    mandatoryPositionals = {
-      @Param(name = "self", type = AppleSkylarkCommon.class, doc = "The apple_common instance.")
-    },
-    optionalNamedOnly = {
+    parameters = {
+      @Param(name = "self", type = AppleSkylarkCommon.class, doc = "The apple_common instance."),
       @Param(
         name = "uses_swift",
         type = Boolean.class,
         defaultValue = "False",
+        named = true,
+        positional = false,
         doc = "Whether this provider should enable Swift support."
       )
     },
@@ -103,6 +146,8 @@ public class AppleSkylarkCommon {
               resultBuilder.addElementsFromSkylark(key, entry.getValue());
             } else if (entry.getKey().equals("providers")) {
               resultBuilder.addProvidersFromSkylark(entry.getValue());
+            } else if (entry.getKey().equals("direct_dep_providers")) {
+              resultBuilder.addDirectDepProvidersFromSkylark(entry.getValue());
             } else {
               throw new IllegalArgumentException(String.format(BAD_KEY_ERROR, entry.getKey()));
             }

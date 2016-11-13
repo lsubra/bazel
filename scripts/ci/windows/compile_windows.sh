@@ -35,23 +35,39 @@ fi
 # These variables are temporarily needed for Bazel
 export BAZEL_SH="$(cygpath --windows /bin/bash)"
 export TMPDIR=${TMPDIR:-c:/bazel_ci/temp}
+export PATH="${PATH}:/c/python_27_amd64/files"
 mkdir -p "${TMPDIR}"  # mkdir does work with a path starting with 'c:/', wow
 
 # Even though there are no quotes around $* in the .bat file, arguments
 # containing spaces seem to be passed properly.
 echo "Bootstrapping Bazel"
 retCode=0
+source ./scripts/ci/build.sh
+
+# TODO(bazel-team): we should replace ./compile.sh by the same script we use
+# for other platform
+release_label="$(get_full_release_name)"
+
+if [ -n "${release_label}" ]; then
+  export EMBED_LABEL="${release_label}"
+fi
 ./compile.sh "$*" || retCode=$?
 if (( $retCode != 0 )); then
   echo "$retCode" > .unstable
   exit 0
 fi
 
-# Run the only Windows-specific test we have.
+# Copy the resulting artifact.
+mkdir -p output/ci
+cp output/bazel.exe output/ci/bazel-$(get_full_release_name).exe
+
 # todo(bazel-team): add more tests here.
 echo "Running tests"
-retCode=0
-./output/bazel test --test_output=all //src/test/shell/bazel:bazel_windows_cpp_test || retCode=$?
+./output/bazel test -k --test_output=all --test_tag_filters -no_windows\
+  //src/test/shell/bazel:bazel_windows_example_test \
+  //src/test/java/...
+retCode=$?
+
 # Exit for failure except for test failures (exit code 3).
 if (( $retCode != 0 )); then
   echo "$retCode" > .unstable

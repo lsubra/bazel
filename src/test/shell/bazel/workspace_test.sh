@@ -14,9 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Load test environment
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 export JAVA_RUNFILES=$BAZEL_RUNFILES
 
@@ -118,6 +119,58 @@ EOF
       && fail "Failure expected" || true
 
   expect_not_log "Exception"
+}
+
+function test_no_select() {
+  cat > WORKSPACE <<EOF
+new_local_repository(
+    name = "foo",
+    path = "/path/to/foo",
+    build_file = select({
+        "//x:y" : "BUILD.1",
+        "//conditions:default" : "BUILD.2"}),
+)
+EOF
+
+  bazel build @foo//... &> $TEST_log && fail "Failure expected" || true
+  expect_log "select() cannot be used in WORKSPACE files"
+}
+
+function test_macro_select() {
+  cat > WORKSPACE <<EOF
+load('//:foo.bzl', 'foo_repo')
+foo_repo()
+EOF
+
+  touch BUILD
+  cat > foo.bzl <<EOF
+def foo_repo():
+  native.new_local_repository(
+      name = "foo",
+      path = "/path/to/foo",
+      build_file = select({
+          "//x:y" : "BUILD.1",
+          "//conditions:default" : "BUILD.2"}),
+  )
+EOF
+
+  bazel build @foo//... &> $TEST_log && fail "Failure expected" || true
+  expect_log "select() cannot be used in macros called from WORKSPACE files"
+}
+
+function test_clean() {
+  mkdir x
+  cd x
+  cat > WORKSPACE <<EOF
+workspace(name = "y")
+EOF
+  cat > BUILD <<'EOF'
+genrule(name = "z", cmd = "echo hi > $@", outs = ["x.out"], srcs = [])
+EOF
+  bazel build //:z &> $TEST_log || fail "Expected build to succeed"
+  [ -L bazel-x ] || fail "bazel-x should be a symlink"
+  bazel clean
+  [ ! -L bazel-x ] || fail "bazel-x should have been removed"
 }
 
 run_suite "workspace tests"

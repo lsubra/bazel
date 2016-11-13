@@ -18,16 +18,13 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.fail;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.lib.analysis.ConfigurationCollectionFactory;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.config.ConfigurationFactory;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.bazel.repository.downloader.HttpDownloader;
 import com.google.devtools.build.lib.packages.BuildFileContainsErrorsException;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
-import com.google.devtools.build.lib.packages.util.MockCcSupport;
-import com.google.devtools.build.lib.packages.util.MockToolsConfig;
 import com.google.devtools.build.lib.rules.cpp.FdoSupportFunction;
 import com.google.devtools.build.lib.rules.cpp.FdoSupportValue;
 import com.google.devtools.build.lib.rules.repository.LocalRepositoryFunction;
@@ -37,17 +34,16 @@ import com.google.devtools.build.lib.rules.repository.RepositoryFunction;
 import com.google.devtools.build.lib.rules.repository.RepositoryLoaderFunction;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
-import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
-
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-
-import java.io.IOException;
-import java.util.Collection;
-import java.util.concurrent.atomic.AtomicBoolean;
+import org.mockito.Mockito;
 
 /**
  * Integration test for skylark repository not as heavyweight than shell integration tests.
@@ -65,19 +61,20 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
    * inject the SkylarkRepositoryFunction in the list of SkyFunctions. In Bazel, this function is
    * injected by the corresponding @{code BlazeModule}.
    */
-  private class CustomAnalysisMock extends AnalysisMock {
-
-    private final AnalysisMock proxied;
-
+  private static class CustomAnalysisMock extends AnalysisMock.Delegate {
     CustomAnalysisMock(AnalysisMock proxied) {
-      this.proxied = proxied;
+      super(proxied);
     }
 
     @Override
     public ImmutableMap<SkyFunctionName, SkyFunction> getSkyFunctions() {
       // Add both the local repository and the skylark repository functions
+      // The HttpDownloader mock injected with the SkylarkRepositoryFunction
+      AtomicReference<HttpDownloader> httpDownloader =
+          new AtomicReference<>(Mockito.mock(HttpDownloader.class));
       RepositoryFunction localRepositoryFunction = new LocalRepositoryFunction();
-      SkylarkRepositoryFunction skylarkRepositoryFunction = new SkylarkRepositoryFunction();
+      SkylarkRepositoryFunction skylarkRepositoryFunction =
+          new SkylarkRepositoryFunction(httpDownloader);
       ImmutableMap<String, RepositoryFunction> repositoryHandlers =
           ImmutableMap.of(LocalRepositoryRule.NAME, localRepositoryFunction);
 
@@ -88,41 +85,6 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
           SkyFunctions.REPOSITORY,
           new RepositoryLoaderFunction(),
           FdoSupportValue.SKYFUNCTION, new FdoSupportFunction());
-    }
-
-    @Override
-    public void setupMockClient(MockToolsConfig mockToolsConfig) throws IOException {
-      proxied.setupMockClient(mockToolsConfig);
-    }
-
-    @Override
-    public void setupMockWorkspaceFiles(Path embeddedBinariesRoot) throws IOException {
-      proxied.setupMockWorkspaceFiles(embeddedBinariesRoot);
-    }
-
-    @Override
-    public ConfigurationFactory createConfigurationFactory() {
-      return proxied.createConfigurationFactory();
-    }
-
-    @Override
-    public ConfigurationFactory createFullConfigurationFactory() {
-      return proxied.createFullConfigurationFactory();
-    }
-
-    @Override
-    public ConfigurationCollectionFactory createConfigurationCollectionFactory() {
-      return proxied.createConfigurationCollectionFactory();
-    }
-
-    @Override
-    public Collection<String> getOptionOverrides() {
-      return proxied.getOptionOverrides();
-    }
-
-    @Override
-    public MockCcSupport ccSupport() {
-      return proxied.ccSupport();
     }
   }
 
@@ -144,6 +106,13 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
       ruleProvider = builder.build();
     }
     return ruleProvider;
+  }
+
+  @Override
+  protected void invalidatePackages() throws InterruptedException {
+    // Repository shuffling breaks access to config-needed paths like //tools/jdk:toolchain and
+    // these tests don't do anything interesting with configurations anyway. So exempt them.
+    invalidatePackages(/*alsoConfigs=*/false);
   }
 
   @Test
@@ -302,6 +271,32 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
   }
 
   @Test
+  public void testCycleErrorInWorkspaceFileWithExternalRepo() throws Exception {
+    try (OutputStream output = scratch.resolve("WORKSPACE").getOutputStream(true /* append */)) {
+      output.write((
+          "\nload('//foo:bar.bzl', 'foobar')"
+              + "\ngit_repository(name = 'git_repo')").getBytes(StandardCharsets.UTF_8));
+    }
+    scratch.file("BUILD", "");
+    scratch.file("foo/BUILD", "");
+    scratch.file(
+        "foo/bar.bzl",
+        "load('@git_repo//xyz:foo.bzl', 'rule_from_git')",
+        "rule_from_git(name = 'foobar')");
+
+    invalidatePackages();
+    try {
+      getTarget("@//:git_repo");
+      fail();
+    } catch (AssertionError expected) {
+      assertThat(expected.getMessage()).contains("Failed to load Skylark extension "
+          + "'@git_repo//xyz:foo.bzl'.\n"
+          + "It usually happens when the repository is not defined prior to being used.\n"
+          + "Maybe repository 'git_repo' was defined later in your WORKSPACE file?");
+    }
+  }
+
+  @Test
   public void testLoadDoesNotHideWorkspaceError() throws Exception {
     reporter.removeHandler(failFastHandler);
     scratch.file("/repo2/data.txt", "data");
@@ -344,5 +339,56 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
         "  cmd='cp $< $@')");
     invalidatePackages();
     assertThat(getRuleContext(getConfiguredTarget("//:data")).getWorkspaceName()).isEqualTo("bleh");
+  }
+
+  @Test
+  public void testSkylarkRepositoryCannotOverrideBuiltInAttribute() throws Exception {
+    scratch.file(
+        "def.bzl",
+        "def _impl(ctx):",
+        "  print(ctx.attr.name)",
+        "",
+        "repo = repository_rule(",
+        "    implementation=_impl,",
+        "    attrs={'name': attr.string(mandatory=True)})");
+    scratch.file(rootDirectory.getRelative("BUILD").getPathString());
+    scratch.overwriteFile(
+        rootDirectory.getRelative("WORKSPACE").getPathString(),
+        "load('//:def.bzl', 'repo')",
+        "repo(name='foo')");
+
+    invalidatePackages();
+    try {
+      getConfiguredTarget("@foo//:bar");
+      fail();
+    } catch (AssertionError e) {
+      assertThat(e.getMessage()).contains("There is already a built-in attribute 'name' "
+          + "which cannot be overridden");
+    }
+  }
+
+  @Test
+  public void testMultipleLoadSameExtension() throws Exception {
+    scratch.overwriteFile(
+        rootDirectory.getRelative("WORKSPACE").getPathString(),
+        "load('//:def.bzl', 'f1')",
+        "f1()",
+        "load('//:def.bzl', 'f2')",
+        "f2()",
+        "load('//:def.bzl', 'f1')",
+        "f1()",
+        "local_repository(name = 'foo', path = '')");
+    scratch.file(
+        rootDirectory.getRelative("BUILD").getPathString(), "filegroup(name = 'bar', srcs = [])");
+    scratch.file(
+        rootDirectory.getRelative("def.bzl").getPathString(),
+        "def f1():",
+        "  print('f1')",
+        "",
+        "def f2():",
+        "  print('f2')");
+    invalidatePackages();
+    // Just request the last external repository to force the whole loading.
+    getConfiguredTarget("@foo//:bar");
   }
 }

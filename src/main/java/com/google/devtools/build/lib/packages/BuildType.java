@@ -28,15 +28,12 @@ import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.syntax.Type.ConversionException;
 import com.google.devtools.build.lib.syntax.Type.DictType;
 import com.google.devtools.build.lib.syntax.Type.ListType;
-
-import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 
 /**
@@ -87,7 +84,7 @@ public final class BuildType {
     }
 
     @Override
-    public DistributionType convert(Object x, String what, Object context) {
+    public DistributionType convert(Object x, Object what, Object context) {
       throw new UnsupportedOperationException();
     }
 
@@ -97,8 +94,7 @@ public final class BuildType {
     }
 
     @Override
-    public Collection<Object> flatten(Object value) {
-      return NOT_COMPOSITE_TYPE;
+    public void visitLabels(LabelVisitor visitor, Object value) {
     }
 
     @Override
@@ -153,7 +149,7 @@ public final class BuildType {
    * <p>The caller is responsible for casting the returned value appropriately.
    */
   public static <T> Object selectableConvert(
-      Type type, Object x, String what, @Nullable Label context)
+      Type type, Object x, Object what, @Nullable Label context)
       throws ConversionException {
     if (x instanceof com.google.devtools.build.lib.syntax.SelectorList) {
       return new SelectorList<T>(
@@ -172,7 +168,7 @@ public final class BuildType {
     }
 
     @Override
-    public FilesetEntry convert(Object x, String what, Object context)
+    public FilesetEntry convert(Object x, Object what, Object context)
         throws ConversionException {
       if (!(x instanceof FilesetEntry)) {
         throw new ConversionException(this, x, what);
@@ -191,8 +187,10 @@ public final class BuildType {
     }
 
     @Override
-    public Collection<? extends Object> flatten(Object value) {
-      return cast(value).getLabels();
+    public void visitLabels(LabelVisitor visitor, Object value) throws InterruptedException {
+      for (Label label : cast(value).getLabels()) {
+        visitor.visit(label);
+      }
     }
   }
 
@@ -208,8 +206,8 @@ public final class BuildType {
     }
 
     @Override
-    public Collection<Label> flatten(Object value) {
-      return ImmutableList.of(cast(value));
+    public void visitLabels(LabelVisitor visitor, Object value) throws InterruptedException {
+      visitor.visit(cast(value));
     }
 
     @Override
@@ -218,7 +216,7 @@ public final class BuildType {
     }
 
     @Override
-    public Label convert(Object x, String what, Object context)
+    public Label convert(Object x, Object what, Object context)
         throws ConversionException {
       if (x instanceof Label) {
         return (Label) x;
@@ -244,7 +242,7 @@ public final class BuildType {
     }
 
     @Override
-    public License convert(Object x, String what, Object context) throws ConversionException {
+    public License convert(Object x, Object what, Object context) throws ConversionException {
       try {
         List<String> licenseStrings = STRING_LIST.convert(x, what);
         return License.parseLicense(licenseStrings);
@@ -259,8 +257,7 @@ public final class BuildType {
     }
 
     @Override
-    public Collection<Object> flatten(Object value) {
-      return NOT_COMPOSITE_TYPE;
+    public void visitLabels(LabelVisitor visitor, Object value) {
     }
 
     @Override
@@ -283,7 +280,7 @@ public final class BuildType {
     }
 
     @Override
-    public Set<DistributionType> convert(Object x, String what, Object context)
+    public Set<DistributionType> convert(Object x, Object what, Object context)
         throws ConversionException {
       try {
         List<String> distribStrings = STRING_LIST.convert(x, what);
@@ -299,8 +296,7 @@ public final class BuildType {
     }
 
     @Override
-    public Collection<Object> flatten(Object what) {
-      return NOT_COMPOSITE_TYPE;
+    public void visitLabels(LabelVisitor visitor, Object value) {
     }
 
     @Override
@@ -326,8 +322,8 @@ public final class BuildType {
     }
 
     @Override
-    public Collection<Label> flatten(Object value) {
-      return ImmutableList.of(cast(value));
+    public void visitLabels(LabelVisitor visitor, Object value) throws InterruptedException {
+      visitor.visit(cast(value));
     }
 
     @Override
@@ -336,7 +332,7 @@ public final class BuildType {
     }
 
     @Override
-    public Label convert(Object x, String what, Object context)
+    public Label convert(Object x, Object what, Object context)
         throws ConversionException {
 
       String value;
@@ -371,7 +367,7 @@ public final class BuildType {
     private final List<Selector<T>> elements;
 
     @VisibleForTesting
-    SelectorList(List<Object> x, String what, @Nullable Label context,
+    SelectorList(List<Object> x, Object what, @Nullable Label context,
         Type<T> originalType) throws ConversionException {
       if (x.size() > 1 && originalType.concat(ImmutableList.<T>of()) == null) {
         throw new ConversionException(
@@ -381,7 +377,7 @@ public final class BuildType {
       ImmutableList.Builder<Selector<T>> builder = ImmutableList.builder();
       for (Object elem : x) {
         if (elem instanceof SelectorValue) {
-          builder.add(new Selector<T>(((SelectorValue) elem).getDictionary(), what,
+          builder.add(new Selector<>(((SelectorValue) elem).getDictionary(), what,
               context, originalType, ((SelectorValue) elem).getNoMatchError()));
         } else {
           T directValue = originalType.convert(elem, what, context);
@@ -452,7 +448,7 @@ public final class BuildType {
     /**
      * Creates a new Selector using the default error message when no conditions match.
      */
-    Selector(ImmutableMap<?, ?> x, String what, @Nullable Label context, Type<T> originalType)
+    Selector(ImmutableMap<?, ?> x, Object what, @Nullable Label context, Type<T> originalType)
         throws ConversionException {
       this(x, what, context, originalType, "");
     }
@@ -460,7 +456,7 @@ public final class BuildType {
     /**
      * Creates a new Selector with a custom error message for when no conditions match.
      */
-    Selector(ImmutableMap<?, ?> x, String what, @Nullable Label context, Type<T> originalType,
+    Selector(ImmutableMap<?, ?> x, Object what, @Nullable Label context, Type<T> originalType,
         String noMatchError) throws ConversionException {
       this.originalType = originalType;
       LinkedHashMap<Label, T> result = new LinkedHashMap<>();
@@ -587,8 +583,7 @@ public final class BuildType {
     }
 
     @Override
-    public Collection<Object> flatten(Object value) {
-      return NOT_COMPOSITE_TYPE;
+    public void visitLabels(LabelVisitor visitor, Object value) {
     }
 
     @Override
@@ -598,7 +593,7 @@ public final class BuildType {
 
     // Like BooleanType, this must handle integers as well.
     @Override
-    public TriState convert(Object x, String what, Object context)
+    public TriState convert(Object x, Object what, Object context)
         throws ConversionException {
       if (x instanceof TriState) {
         return (TriState) x;

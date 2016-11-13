@@ -26,11 +26,15 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
+import com.google.devtools.build.lib.packages.SkylarkClassObjectConstructor.Key;
+import com.google.devtools.build.lib.packages.SkylarkProviderIdentifier;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.syntax.ClassObject;
+import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
 import com.google.devtools.build.lib.util.Preconditions;
-
 import javax.annotation.Nullable;
 
 /**
@@ -74,6 +78,28 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, ClassObjec
     return actual == null ? null : actual.get(providerKey);
   }
 
+  @Nullable
+  @Override
+  public SkylarkClassObject get(Key providerKey) {
+    return actual == null ? null : actual.get(providerKey);
+  }
+
+  @Nullable
+  @Override
+  public Object get(SkylarkProviderIdentifier id) {
+    return actual == null ? null : actual.get(id);
+  }
+
+  @Override
+  public Object getIndex(Object key, Location loc) throws EvalException {
+    return actual == null ? null : actual.getIndex(key, loc);
+  }
+
+  @Override
+  public boolean containsKey(Object key, Location loc) throws EvalException {
+    return actual != null && actual.containsKey(key, loc);
+  }
+
   @Override
   public Target getTarget() {
     return actual == null ? null : actual.getTarget();
@@ -94,7 +120,7 @@ public final class AliasConfiguredTarget implements ConfiguredTarget, ClassObjec
     if (name.equals("label")) {
       return getLabel();
     } else if (name.equals("files")) {
-      // A shortcut for files to build in Skylark. FileConfiguredTarget and RunleConfiguredTarget
+      // A shortcut for files to build in Skylark. FileConfiguredTarget and RuleConfiguredTarget
       // always has FileProvider and Error- and PackageGroupConfiguredTarget-s shouldn't be
       // accessible in Skylark.
       return SkylarkNestedSet.of(Artifact.class, actual == null

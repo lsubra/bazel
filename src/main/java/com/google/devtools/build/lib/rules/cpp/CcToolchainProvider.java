@@ -22,11 +22,10 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.Map;
-
 import javax.annotation.Nullable;
 
 /**
@@ -34,9 +33,7 @@ import javax.annotation.Nullable;
  */
 @Immutable
 public final class CcToolchainProvider implements TransitiveInfoProvider {
-  /**
-   * An empty toolchain to be returned in the error case (instead of null).
-   */
+  /** An empty toolchain to be returned in the error case (instead of null). */
   public static final CcToolchainProvider EMPTY_TOOLCHAIN_IS_ERROR =
       new CcToolchainProvider(
           null,
@@ -57,7 +54,10 @@ public final class CcToolchainProvider implements TransitiveInfoProvider {
           false,
           false,
           ImmutableMap.<String, String>of(),
-          ImmutableList.<Artifact>of());
+          ImmutableList.<Artifact>of(),
+          NestedSetBuilder.<Pair<String, String>>emptySet(Order.COMPILE_ORDER),
+          null,
+          ImmutableMap.<String, String>of());
 
   @Nullable private final CppConfiguration cppConfiguration;
   private final NestedSet<Artifact> crosstool;
@@ -76,8 +76,11 @@ public final class CcToolchainProvider implements TransitiveInfoProvider {
   private final CppCompilationContext cppCompilationContext;
   private final boolean supportsParamFiles;
   private final boolean supportsHeaderParsing;
-  private final Map<String, String> buildVariables;
+  private final ImmutableMap<String, String> buildVariables;
   private final ImmutableList<Artifact> builtinIncludeFiles;
+  private final NestedSet<Pair<String, String>> coverageEnvironment;
+  @Nullable private final Artifact linkDynamicLibraryTool;
+  private final ImmutableMap<String, String> environment;
 
   public CcToolchainProvider(
       @Nullable CppConfiguration cppConfiguration,
@@ -98,7 +101,10 @@ public final class CcToolchainProvider implements TransitiveInfoProvider {
       boolean supportsParamFiles,
       boolean supportsHeaderParsing,
       Map<String, String> buildVariables,
-      ImmutableList<Artifact> builtinIncludeFiles) {
+      ImmutableList<Artifact> builtinIncludeFiles,
+      NestedSet<Pair<String, String>> coverageEnvironment,
+      Artifact linkDynamicLibraryTool,
+      ImmutableMap<String, String> environment) {
     this.cppConfiguration = cppConfiguration;
     this.crosstool = Preconditions.checkNotNull(crosstool);
     this.crosstoolMiddleman = Preconditions.checkNotNull(crosstoolMiddleman);
@@ -116,8 +122,11 @@ public final class CcToolchainProvider implements TransitiveInfoProvider {
     this.cppCompilationContext = Preconditions.checkNotNull(cppCompilationContext);
     this.supportsParamFiles = supportsParamFiles;
     this.supportsHeaderParsing = supportsHeaderParsing;
-    this.buildVariables = buildVariables;
+    this.buildVariables = ImmutableMap.copyOf(buildVariables);
     this.builtinIncludeFiles = builtinIncludeFiles;
+    this.coverageEnvironment = coverageEnvironment;
+    this.linkDynamicLibraryTool = linkDynamicLibraryTool;
+    this.environment = environment;
   }
 
   /**
@@ -252,7 +261,7 @@ public final class CcToolchainProvider implements TransitiveInfoProvider {
   /**
    * Returns build variables to be templated into the crosstool.
    */
-  public Map<String, String> getBuildVariables() {
+  public ImmutableMap<String, String> getBuildVariables() {
     return buildVariables;
   }
 
@@ -262,5 +271,24 @@ public final class CcToolchainProvider implements TransitiveInfoProvider {
    */
   public ImmutableList<Artifact> getBuiltinIncludeFiles() {
     return builtinIncludeFiles;
+  }
+
+  /**
+   * Returns the environment variables that need to be added to tests that collect code coverage.
+   */
+  public NestedSet<Pair<String, String>> getCoverageEnvironment() {
+    return coverageEnvironment;
+  }
+
+  public ImmutableMap<String, String> getEnvironment() {
+    return environment;
+  }
+
+  /**
+   * Returns the tool which should be used for linking dynamic libraries, or in case it's not
+   * specified by the crosstool this will be @tools_repository/tools/cpp:link_dynamic_library
+   */
+  public Artifact getLinkDynamicLibraryTool() {
+    return linkDynamicLibraryTool;
   }
 }

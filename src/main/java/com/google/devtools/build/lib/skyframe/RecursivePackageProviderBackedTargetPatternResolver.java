@@ -17,6 +17,7 @@ import static com.google.devtools.build.lib.pkgcache.FilteringPolicies.NO_FILTER
 
 import com.google.common.base.Function;
 import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -27,7 +28,7 @@ import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPatternResolver;
-import com.google.devtools.build.lib.concurrent.ExecutorUtil;
+import com.google.devtools.build.lib.concurrent.MoreFutures;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadCompatible;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
@@ -41,13 +42,14 @@ import com.google.devtools.build.lib.pkgcache.RecursivePackageProvider;
 import com.google.devtools.build.lib.pkgcache.TargetPatternResolverUtil;
 import com.google.devtools.build.lib.util.BatchCallback;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A {@link TargetPatternResolver} backed by a {@link RecursivePackageProvider}.
@@ -145,7 +147,7 @@ public class RecursivePackageProviderBackedTargetPatternResolver
   private Map<PackageIdentifier, ResolvedTargets<Target>> bulkGetTargetsInPackage(
           String originalPattern,
           Iterable<PackageIdentifier> pkgIds, FilteringPolicy policy)
-          throws TargetParsingException, InterruptedException {
+          throws InterruptedException {
     try {
       Map<PackageIdentifier, Package> pkgs = bulkGetPackages(pkgIds);
       if (pkgs.size() != Iterables.size(pkgIds)) {
@@ -168,7 +170,7 @@ public class RecursivePackageProviderBackedTargetPatternResolver
   }
 
   @Override
-  public boolean isPackage(PackageIdentifier packageIdentifier) {
+  public boolean isPackage(PackageIdentifier packageIdentifier) throws InterruptedException {
     return recursivePackageProvider.isPackage(eventHandler, packageIdentifier);
   }
 
@@ -202,62 +204,46 @@ public class RecursivePackageProviderBackedTargetPatternResolver
               }
             });
     final AtomicBoolean foundTarget = new AtomicBoolean(false);
-    final AtomicReference<InterruptedException> interrupt = new AtomicReference<>();
-    final AtomicReference<TargetParsingException> parsingException = new AtomicReference<>();
-    final AtomicReference<Exception> genericException = new AtomicReference<>();
-
     final Object callbackLock = new Object();
 
     // For very large sets of packages, we may not want to process all of them at once, so we split
     // into batches.
-    try {
-      for (final Iterable<PackageIdentifier> pkgIdBatch :
-          Iterables.partition(pkgIds, MAX_PACKAGES_BULK_GET)) {
-        executor.execute(new Runnable() {
+    List<List<PackageIdentifier>> partitions =
+        ImmutableList.copyOf(Iterables.partition(pkgIds, MAX_PACKAGES_BULK_GET));
+    ArrayList<Future<Void>> tasks = new ArrayList<>(partitions.size());
+    for (final Iterable<PackageIdentifier> pkgIdBatch : partitions) {
+      tasks.add(executor.submit(new Callable<Void>() {
           @Override
-          public void run() {
-            Iterable<ResolvedTargets<Target>> resolvedTargets = null;
-            try {
-              resolvedTargets =
-                  bulkGetTargetsInPackage(originalPattern, pkgIdBatch, NO_FILTER).values();
-            } catch (InterruptedException e) {
-              interrupt.compareAndSet(null, e);
-              return;
-            } catch (TargetParsingException e) {
-              parsingException.compareAndSet(null, e);
-            }
-
+          public Void call() throws E, TargetParsingException, InterruptedException {
+            Iterable<ResolvedTargets<Target>> resolvedTargets =
+                bulkGetTargetsInPackage(originalPattern, pkgIdBatch, NO_FILTER).values();
             List<Target> filteredTargets = new ArrayList<>(calculateSize(resolvedTargets));
             for (ResolvedTargets<Target> targets : resolvedTargets) {
               for (Target target : targets.getTargets()) {
-                // Perform the no-targets-found check before applying the filtering policy so we
-                // only return the error if the input directory's subtree really contains no
-                // targets.
+                // Perform the no-targets-found check before applying the filtering policy
+                // so we only return the error if the input directory's subtree really
+                // contains no targets.
                 foundTarget.set(true);
                 if (actualPolicy.shouldRetain(target, false)) {
                   filteredTargets.add(target);
                 }
               }
             }
-            try {
-              synchronized (callbackLock) {
-                callback.process(filteredTargets);
-              }
-            } catch (InterruptedException e) {
-              interrupt.compareAndSet(null, e);
-            } catch (Exception e) {
-              genericException.compareAndSet(e, null);
+            synchronized (callbackLock) {
+              callback.process(filteredTargets);
             }
+            return null;
           }
-        });
-      }
-    } finally {
-      ExecutorUtil.interruptibleShutdown(executor);
+        }));
     }
-
-    Throwables.propagateIfInstanceOf(interrupt.get(), InterruptedException.class);
-    Throwables.propagateIfInstanceOf(parsingException.get(), TargetParsingException.class);
-    Throwables.propagateIfPossible(genericException.get(), exceptionClass);
+    try {
+      MoreFutures.waitForAllInterruptiblyFailFast(tasks);
+    } catch (ExecutionException e) {
+      Throwables.propagateIfPossible(e.getCause(), exceptionClass);
+      Throwables.propagateIfPossible(
+          e.getCause(), TargetParsingException.class, InterruptedException.class);
+      throw new IllegalStateException(e);
+    }
     if (!foundTarget.get()) {
       throw new TargetParsingException("no targets found beneath '" + pathFragment + "'");
     }

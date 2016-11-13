@@ -13,6 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import com.android.builder.core.VariantType;
+import com.android.ide.common.xml.AndroidManifestParser;
+import com.android.ide.common.xml.ManifestData;
+import com.android.io.StreamException;
+import com.android.utils.StdLogger;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.ByteStreams;
@@ -21,19 +26,11 @@ import com.google.devtools.build.android.AndroidResourceProcessor.FlagAaptOption
 import com.google.devtools.build.android.Converters.ExistingPathConverter;
 import com.google.devtools.build.android.Converters.PathConverter;
 import com.google.devtools.build.android.Converters.PathListConverter;
+import com.google.devtools.build.android.Converters.VariantTypeConverter;
 import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
-
-import com.android.builder.core.VariantConfiguration;
-import com.android.ide.common.xml.AndroidManifestParser;
-import com.android.ide.common.xml.ManifestData;
-import com.android.io.StreamException;
-import com.android.utils.StdLogger;
-
-import org.xml.sax.SAXException;
-
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -47,8 +44,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
-
 import javax.xml.parsers.ParserConfigurationException;
+import org.xml.sax.SAXException;
 
 /**
  * An action to perform resource shrinking using the Gradle resource shrinker.
@@ -80,6 +77,13 @@ public class ResourceShrinkerAction {
         converter = ExistingPathConverter.class,
         help = "Path to the shrunk jar from a Proguard run with shrinking enabled.")
     public Path shrunkJar;
+
+    @Option(name = "proguardMapping",
+        defaultValue = "null",
+        category = "input",
+        converter = PathConverter.class,
+        help = "Path to the Proguard obfuscation mapping of shrunkJar.")
+    public Path proguardMapping;
 
     @Option(name = "resources",
         defaultValue = "null",
@@ -129,6 +133,28 @@ public class ResourceShrinkerAction {
         converter = PathConverter.class,
         help = "Path to where the shrunk resource.ap_ should be written.")
     public Path shrunkResources;
+
+    @Option(name = "rTxtOutput",
+        defaultValue = "null",
+        converter = PathConverter.class,
+        category = "output",
+        help = "Path to where the R.txt should be written.")
+    public Path rTxtOutput;
+
+    @Option(name = "log",
+        defaultValue = "null",
+        category = "output",
+        converter = PathConverter.class,
+        help = "Path to where the shrinker log should be written.")
+    public Path log;
+
+    @Option(name = "packageType",
+        defaultValue = "DEFAULT",
+        converter = VariantTypeConverter.class,
+        category = "config",
+        help = "Variant configuration type for packaging the resources."
+            + " Acceptible values DEFAULT, LIBRARY, ANDROID_TEST, UNIT_TEST")
+    public VariantType packageType;
   }
 
   private static AaptConfigOptions aaptConfigOptions;
@@ -160,11 +186,10 @@ public class ResourceShrinkerAction {
     options = optionsParser.getOptions(Options.class);
 
     AndroidResourceProcessor resourceProcessor = new AndroidResourceProcessor(stdLogger);
-    try {
-      // Setup temporary working directories.
-      Path working = Files.createTempDirectory("resource_shrinker_tmp");
-      working.toFile().deleteOnExit();
-
+    // Setup temporary working directories.
+    try (ScopedTemporaryDirectory scopedTmp =
+        new ScopedTemporaryDirectory("resource_shrinker_tmp")) {
+      Path working = scopedTmp.getPath();
       final Path resourceFiles = working.resolve("resource_files");
 
       final Path shrunkResources = working.resolve("shrunk_resources");
@@ -195,18 +220,25 @@ public class ResourceShrinkerAction {
           options.rTxt,
           options.shrunkJar,
           options.primaryManifest,
-          resourceFiles.resolve("res"));
+          options.proguardMapping,
+          resourceFiles.resolve("res"),
+          options.log);
 
       resourceShrinker.shrink(shrunkResources);
       logger.fine(String.format("Shrinking resources finished at %sms",
           timer.elapsed(TimeUnit.MILLISECONDS)));
+
+      Path generatedSources = null;
+      if (options.rTxtOutput != null) {
+        generatedSources = working.resolve("generated_resources");
+      }
 
       // Build ap_ with shrunk resources.
       resourceProcessor.processResources(
           aaptConfigOptions.aapt,
           aaptConfigOptions.androidJar,
           aaptConfigOptions.buildToolsVersion,
-          VariantConfiguration.Type.DEFAULT,
+          VariantType.DEFAULT,
           aaptConfigOptions.debug,
           null /* packageForR */,
           new FlagAaptOptions(aaptConfigOptions),
@@ -215,14 +247,21 @@ public class ResourceShrinkerAction {
           new MergedAndroidData(
               shrunkResources, resourceFiles.resolve("assets"), options.primaryManifest),
           ImmutableList.<DependencyAndroidData>of() /* libraries */,
-          null /* sourceOutputDir */,
+          generatedSources,
           options.shrunkApk,
           null /* proguardOutput */,
           null /* mainDexProguardOutput */,
-          null /* publicResourcesOut */);
+         null /* publicResourcesOut */,
+         null /* dataBindingInfoOut */);
       if (options.shrunkResources != null) {
         resourceProcessor.createResourcesZip(shrunkResources, resourceFiles.resolve("assets"),
-            options.shrunkResources);
+            options.shrunkResources, false /* compress */);
+      }
+      if (options.rTxtOutput != null) {
+        resourceProcessor.copyRToOutput(
+            generatedSources,
+            options.rTxtOutput,
+            options.packageType == VariantType.LIBRARY);
       }
       logger.fine(String.format("Packing resources finished at %sms",
           timer.elapsed(TimeUnit.MILLISECONDS)));

@@ -18,6 +18,7 @@ import static com.google.devtools.build.lib.analysis.RunfilesProvider.withData;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -38,12 +39,10 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
-import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.List;
 import java.util.Map;
 
@@ -63,7 +62,8 @@ public class GenRule implements RuleConfiguredTargetFactory {
   }
 
   @Override
-  public ConfiguredTarget create(RuleContext ruleContext) throws RuleErrorException {
+  public ConfiguredTarget create(RuleContext ruleContext)
+      throws RuleErrorException, InterruptedException {
     final List<Artifact> resolvedSrcs = Lists.newArrayList();
 
     final NestedSet<Artifact> filesToBuild =
@@ -110,6 +110,8 @@ public class GenRule implements RuleConfiguredTargetFactory {
     }
 
     ImmutableMap<String, String> env = ruleContext.getConfiguration().getLocalShellEnvironment();
+    ImmutableSet<String> clientEnvVars =
+        ruleContext.getConfiguration().getVariableShellEnvironment();
 
     Map<String, String> executionInfo = Maps.newLinkedHashMap();
     executionInfo.putAll(TargetUtils.getExecutionInfo(ruleContext.getRule()));
@@ -139,6 +141,7 @@ public class GenRule implements RuleConfiguredTargetFactory {
             filesToBuild,
             argv,
             env,
+            clientEnvVars,
             ImmutableMap.copyOf(executionInfo),
             ImmutableMap.copyOf(commandHelper.getRemoteRunfileManifestMap()),
             message + ' ' + ruleContext.getLabel()));
@@ -204,7 +207,7 @@ public class GenRule implements RuleConfiguredTargetFactory {
                   dir = ruleContext.getConfiguration().getGenfilesFragment();
                 }
                 PathFragment relPath =
-                    ruleContext.getRule().getLabel().getPackageIdentifier().getPathFragment();
+                    ruleContext.getRule().getLabel().getPackageIdentifier().getSourceRoot();
                 return dir.getRelative(relPath).getPathString();
               }
             } else {

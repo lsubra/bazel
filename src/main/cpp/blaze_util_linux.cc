@@ -14,8 +14,11 @@
 
 #include <errno.h>  // errno, ENAMETOOLONG
 #include <limits.h>
+#include <linux/magic.h>
 #include <pwd.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>  // strerror
 #include <sys/socket.h>
 #include <sys/statfs.h>
@@ -27,6 +30,7 @@
 #include "src/main/cpp/util/errors.h"
 #include "src/main/cpp/util/exit_code.h"
 #include "src/main/cpp/util/file.h"
+#include "src/main/cpp/util/file_posix.h"
 #include "src/main/cpp/util/port.h"
 #include "src/main/cpp/util/strings.h"
 
@@ -69,7 +73,7 @@ void WarnFilesystemType(const string& output_base) {
     return;
   }
 
-  if (buf.f_type == 0x00006969) {  // NFS_SUPER_MAGIC
+  if (buf.f_type == NFS_SUPER_MAGIC) {
     fprintf(stderr, "WARNING: Output base '%s' is on NFS. This may lead "
             "to surprising failures and undetermined behavior.\n",
             output_base.c_str());
@@ -91,16 +95,6 @@ string GetSelfPath() {
   return string(buffer);
 }
 
-pid_t GetPeerProcessId(int socket) {
-  struct ucred creds = {};
-  socklen_t len = sizeof creds;
-  if (getsockopt(socket, SOL_SOCKET, SO_PEERCRED, &creds, &len) == -1) {
-    pdie(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR,
-         "can't get server pid from connection");
-  }
-  return creds.pid;
-}
-
 uint64_t MonotonicClock() {
   struct timespec ts = {};
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -114,14 +108,6 @@ uint64_t ProcessClock() {
 }
 
 void SetScheduling(bool batch_cpu_scheduling, int io_nice_level) {
-  // Move ourself into a low priority CPU scheduling group if the
-  // machine is configured appropriately.  Fail silently, because this
-  // isn't available on all kernels.
-  if (FILE *f = fopen("/dev/cgroup/cpu/batch/tasks", "w")) {
-    fprintf(f, "%d", getpid());
-    fclose(f);
-  }
-
   if (batch_cpu_scheduling) {
     sched_param param = {};
     param.sched_priority = 0;
@@ -182,6 +168,7 @@ string GetDefaultHostJavabase() {
   return blaze_util::Dirname(blaze_util::Dirname(javac_dir));
 }
 
+// Called from a signal handler!
 static bool GetStartTime(const string& pid, string* start_time) {
   string statfile = "/proc/" + pid + "/stat";
   string statline;
@@ -221,12 +208,13 @@ void WriteSystemSpecificProcessIdentifier(const string& server_dir) {
 // On Linux we use a combination of PID and start time to identify the server
 // process. That is supposed to be unique unless one can start more processes
 // than there are PIDs available within a single jiffy.
-void KillServerProcess(
+bool VerifyServerProcess(
     int pid, const string& output_base, const string& install_base) {
   string start_time;
   if (!GetStartTime(ToString(pid), &start_time)) {
-    // Cannot read PID file from /proc . Process died in the meantime?
-    return;
+    // Cannot read PID file from /proc . Process died meantime, all is good. No
+    // stale server is present.
+    return false;
   }
 
   string recorded_start_time;
@@ -234,16 +222,29 @@ void KillServerProcess(
       blaze_util::JoinPath(output_base, "server/server.starttime"),
       &recorded_start_time);
 
-  // start time file got deleted, but PID file didn't. This is strange.
-  // Assume that this is an old Blaze process that doesn't know how to  write
-  // start time files yet.
-  if (file_present && recorded_start_time != start_time) {
-    // This is a different process.
-    fprintf(stderr, "PID %d got reused. Not killing the process.\n", pid);
-    return;
-  }
+  // If start time file got deleted, but PID file didn't, assume taht this is an
+  // old Blaze process that doesn't know how to write start time files yet.
+  return !file_present || recorded_start_time == start_time;
+}
 
+bool KillServerProcess(int pid) {
+  // Kill the process and make sure it's dead before proceeding.
   killpg(pid, SIGKILL);
+  int check_killed_retries = 10;
+  while (killpg(pid, 0) == 0) {
+    if (check_killed_retries-- > 0) {
+      sleep(1);
+    } else {
+      die(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+          "Attempted to kill stale blaze server process (pid=%d) using "
+          "SIGKILL, but it did not die in a timely fashion.", pid);
+    }
+  }
+  return true;
+}
+
+// Not supported.
+void ExcludePathFromBackup(const string &path) {
 }
 
 }  // namespace blaze

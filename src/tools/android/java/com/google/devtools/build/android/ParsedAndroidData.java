@@ -13,16 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import com.android.SdkConstants;
+import com.android.ide.common.res2.MergingException;
+import com.android.resources.FolderTypeRelationship;
+import com.android.resources.ResourceFolderType;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.android.xml.StyleableXmlResourceValue;
-
-import com.android.ide.common.res2.MergingException;
-import com.android.resources.ResourceFolderType;
-
 import java.io.IOException;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -39,10 +40,8 @@ import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Logger;
-
 import javax.annotation.concurrent.Immutable;
 import javax.annotation.concurrent.NotThreadSafe;
-import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 
 /**
@@ -85,11 +84,13 @@ public class ParsedAndroidData {
 
     private void checkForErrors() throws MergingException {
       if (!errors.isEmpty()) {
-        StringBuilder messageBuilder = new StringBuilder();
+        MergingException mergingException =
+             MergingException
+                 .withMessage(String.format("%s Parse Error(s)", errors.size())).build();
         for (Exception e : errors) {
-          messageBuilder.append("\n").append(e.getMessage());
+          mergingException.addSuppressed(e);
         }
-        throw new MergingException(messageBuilder.toString());
+        throw mergingException;
       }
     }
 
@@ -176,9 +177,9 @@ public class ParsedAndroidData {
     public void consume(K key, V value) {
       if (target.containsKey(key)) {
         conflicts.add(MergeConflict.between(key, value, target.get(key)));
-      } else {
-        target.put(key, value);
       }
+      // Always record the value, conflict or not, to maintain backwards compatibility.
+      target.put(key, value);
     }
   }
 
@@ -247,7 +248,17 @@ public class ParsedAndroidData {
     private final List<Exception> errors;
     private ResourceFolderType folderType;
     private FullyQualifiedName.Factory fqnFactory;
-    private final XMLInputFactory xmlInputFactory = XMLInputFactory.newFactory();
+
+    /**
+     * Resource folders with XML files that may contain "@+id".
+     * See android_ide_common's {@link FolderTypeRelationship}.
+     */
+    private static final EnumSet<ResourceFolderType> ID_PROVIDING_RESOURCE_TYPES = EnumSet.of(
+        ResourceFolderType.DRAWABLE,
+        ResourceFolderType.LAYOUT,
+        ResourceFolderType.MENU,
+        ResourceFolderType.TRANSITION,
+        ResourceFolderType.XML);
 
     ResourceFileVisitor(
         KeyValueConsumer<DataKey, DataResource> overwritingConsumer,
@@ -258,27 +269,11 @@ public class ParsedAndroidData {
       this.errors = errors;
     }
 
-    private static String deriveRawFullyQualifiedName(Path path) {
-      if (path.getNameCount() < 2) {
-        throw new IllegalArgumentException(
-            String.format(
-                "The resource path %s is too short. "
-                    + "The path is expected to be <resource type>/<file name>.",
-                path));
-      }
-      String pathWithExtension =
-          path.subpath(path.getNameCount() - 2, path.getNameCount()).toString();
-      int extensionStart = pathWithExtension.lastIndexOf('.');
-      if (extensionStart > 0) {
-        return pathWithExtension.substring(0, extensionStart);
-      }
-      return pathWithExtension;
-    }
-
     @Override
     public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
         throws IOException {
-      final String[] dirNameAndQualifiers = dir.getFileName().toString().split("-");
+      final String[] dirNameAndQualifiers = dir.getFileName().toString().split(
+          SdkConstants.RES_QUALIFIER_SEP);
       folderType = ResourceFolderType.getTypeByName(dirNameAndQualifiers[0]);
       if (folderType == null) {
         return FileVisitResult.CONTINUE;
@@ -299,11 +294,25 @@ public class ParsedAndroidData {
         if (!Files.isDirectory(path) && !path.getFileName().toString().startsWith(".")) {
           if (folderType == ResourceFolderType.VALUES) {
             DataResourceXml.parse(
-                xmlInputFactory, path, fqnFactory, overwritingConsumer, combiningResources);
+                XmlResourceValues.getXmlInputFactory(),
+                path,
+                fqnFactory,
+                overwritingConsumer,
+                combiningResources);
           } else if (folderType != null) {
-            String rawFqn = deriveRawFullyQualifiedName(path);
-            FullyQualifiedName key = fqnFactory.parse(rawFqn);
-            overwritingConsumer.consume(key, DataValueFile.of(path));
+            FullyQualifiedName key = fqnFactory.parse(path);
+            if (ID_PROVIDING_RESOURCE_TYPES.contains(folderType)
+                && path.getFileName().toString().endsWith(SdkConstants.DOT_XML)) {
+              DataValueFileWithIds.parse(
+                  XmlResourceValues.getXmlInputFactory(),
+                  path,
+                  key,
+                  fqnFactory,
+                  overwritingConsumer,
+                  combiningResources);
+            } else {
+              overwritingConsumer.consume(key, DataValueFile.of(path));
+            }
           }
         }
       } catch (IllegalArgumentException | XMLStreamException e) {
@@ -332,7 +341,7 @@ public class ParsedAndroidData {
    * @throws IOException when there are issues with reading files.
    * @throws MergingException when there is invalid resource information.
    */
-  public static ParsedAndroidData from(UnvalidatedAndroidData primary)
+  public static ParsedAndroidData from(UnvalidatedAndroidDirectories primary)
       throws IOException, MergingException {
     final ParsedAndroidDataBuildingPathWalker pathWalker =
         ParsedAndroidDataBuildingPathWalker.create(Builder.newBuilder());

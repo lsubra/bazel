@@ -18,6 +18,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.rules.android.AndroidCommon;
 import com.google.devtools.build.lib.rules.android.AndroidIdeInfoProvider;
@@ -69,7 +70,7 @@ public class BazelAndroidSemantics implements AndroidSemantics {
   }
 
   @Override
-  public ImmutableList<String> getJavacArguments() {
+  public ImmutableList<String> getJavacArguments(RuleContext ruleContext) {
     return ImmutableList.of(
         "-source", "7",
         "-target", "7");
@@ -81,6 +82,10 @@ public class BazelAndroidSemantics implements AndroidSemantics {
   }
 
   @Override
+  public void addMainDexListActionArguments(RuleContext ruleContext, SpawnAction.Builder builder) {
+  }
+
+  @Override
   public Artifact getApkDebugSigningKey(RuleContext ruleContext) {
     return ruleContext.getPrerequisiteArtifact("$debug_keystore", Mode.HOST);
   }
@@ -89,5 +94,15 @@ public class BazelAndroidSemantics implements AndroidSemantics {
   public void addCoverageSupport(RuleContext ruleContext, AndroidCommon common,
       JavaSemantics javaSemantics, boolean forAndroidTest, Builder attributes,
       JavaCompilationArtifacts.Builder artifactsBuilder) {
+  }
+
+  @Override
+  public ImmutableList<String> getAttributesWithJavaRuntimeDeps(RuleContext ruleContext) {
+    switch (ruleContext.getRule().getRuleClass()) {
+      case "android_binary":
+        return ImmutableList.of("deps");
+      default:
+        throw new UnsupportedOperationException("Only supported for top-level binaries");
+    }
   }
 }

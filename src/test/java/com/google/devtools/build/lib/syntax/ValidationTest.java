@@ -18,11 +18,11 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.syntax.SkylarkList.MutableList;
 import com.google.devtools.build.lib.syntax.SkylarkList.Tuple;
 import com.google.devtools.build.lib.syntax.util.EvaluationTestCase;
-
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -112,22 +112,6 @@ public class ValidationTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testStructMembersAreImmutable() {
-    checkError(
-        "can only assign to variables and tuples, not to 's.x'",
-        "s = struct(x = 'a')",
-        "s.x = 'b'\n");
-  }
-
-  @Test
-  public void testStructDictMembersAreImmutable() {
-    checkError(
-        "can only assign to variables and tuples, not to 's.x['b']'",
-        "s = struct(x = {'a' : 1})",
-        "s.x['b'] = 2\n");
-  }
-
-  @Test
   public void testTupleLiteralWorksForDifferentTypes() throws Exception {
     parse("('a', 1)");
   }
@@ -155,13 +139,11 @@ public class ValidationTest extends EvaluationTestCase {
 
   @Test
   public void testFuncReturningDictAssignmentAsLValue() throws Exception {
-    checkError(
-        "can only assign to variables and tuples, not to 'my_dict()['b']'",
+    parse(
         "def my_dict():",
         "  return {'a': 1}",
         "def func():",
-        "  my_dict()['b'] = 2",
-        "  return d\n");
+        "  my_dict()['b'] = 2");
   }
 
   @Test
@@ -283,45 +265,39 @@ public class ValidationTest extends EvaluationTestCase {
   }
 
   @Test
-  public void testParentWithSkylarkModule() throws Exception {
+  public void testGetSkylarkType() throws Exception {
     Class<?> emptyTupleClass = Tuple.empty().getClass();
     Class<?> tupleClass = Tuple.of(1, "a", "b").getClass();
-    Class<?> mutableListClass = new MutableList(Tuple.of(1, 2, 3), env).getClass();
+    Class<?> mutableListClass = new MutableList<>(Tuple.of(1, 2, 3), env).getClass();
 
-    assertThat(mutableListClass).isEqualTo(MutableList.class);
+    assertThat(EvalUtils.getSkylarkType(mutableListClass)).isEqualTo(MutableList.class);
     assertThat(MutableList.class.isAnnotationPresent(SkylarkModule.class)).isTrue();
-    assertThat(EvalUtils.getParentWithSkylarkModule(MutableList.class))
-        .isEqualTo(MutableList.class);
-    assertThat(EvalUtils.getParentWithSkylarkModule(emptyTupleClass)).isEqualTo(Tuple.class);
-    assertThat(EvalUtils.getParentWithSkylarkModule(tupleClass)).isEqualTo(Tuple.class);
-    // TODO(bazel-team): make a tuple not a list anymore.
-    assertThat(EvalUtils.getParentWithSkylarkModule(tupleClass)).isEqualTo(Tuple.class);
+    assertThat(EvalUtils.getSkylarkType(emptyTupleClass)).isEqualTo(Tuple.class);
+    assertThat(EvalUtils.getSkylarkType(tupleClass)).isEqualTo(Tuple.class);
 
-    // TODO(bazel-team): fix that?
-    assertThat(ClassObject.class.isAnnotationPresent(SkylarkModule.class)).isFalse();
-    assertThat(ClassObject.SkylarkClassObject.class.isAnnotationPresent(SkylarkModule.class))
-        .isTrue();
-    assertThat(
-            EvalUtils.getParentWithSkylarkModule(ClassObject.SkylarkClassObject.class)
-                == ClassObject.SkylarkClassObject.class)
-        .isTrue();
-    assertThat(EvalUtils.getParentWithSkylarkModule(ClassObject.class)).isNull();
+    assertThat(EvalUtils.getSkylarkType(SkylarkClassObject.class))
+        .isEqualTo(SkylarkClassObject.class);
+    try {
+      EvalUtils.getSkylarkType(ClassObject.class);
+      throw new Exception("Should have raised IllegalArgumentException exception");
+    } catch (IllegalArgumentException e) {
+      assertThat(e.getMessage()).contains(
+          "interface com.google.devtools.build.lib.syntax.ClassObject is not allowed "
+          + "as a Skylark value");
+    }
   }
 
   @Test
   public void testSkylarkTypeEquivalence() throws Exception {
-    // All subclasses of SkylarkList are made equivalent
     Class<?> emptyTupleClass = Tuple.empty().getClass();
     Class<?> tupleClass = Tuple.of(1, "a", "b").getClass();
-    Class<?> mutableListClass = new MutableList(Tuple.of(1, 2, 3), env).getClass();
+    Class<?> mutableListClass = new MutableList<>(Tuple.of(1, 2, 3), env).getClass();
 
     assertThat(SkylarkType.of(mutableListClass)).isEqualTo(SkylarkType.LIST);
     assertThat(SkylarkType.of(emptyTupleClass)).isEqualTo(SkylarkType.TUPLE);
     assertThat(SkylarkType.of(tupleClass)).isEqualTo(SkylarkType.TUPLE);
     assertThat(SkylarkType.TUPLE).isNotEqualTo(SkylarkType.LIST);
 
-    // Also for ClassObject
-    assertThat(SkylarkType.of(ClassObject.SkylarkClassObject.class)).isEqualTo(SkylarkType.STRUCT);
     try {
       SkylarkType.of(ClassObject.class);
       throw new Exception("foo");
@@ -335,7 +311,8 @@ public class ValidationTest extends EvaluationTestCase {
     // TODO(bazel-team): move to some other place to remove dependency of syntax tests on Artifact?
     assertThat(SkylarkType.of(Artifact.SpecialArtifact.class))
         .isEqualTo(SkylarkType.of(Artifact.class));
-    assertThat(SkylarkType.of(RuleConfiguredTarget.class)).isNotEqualTo(SkylarkType.STRUCT);
+    assertThat(SkylarkType.of(RuleConfiguredTarget.class))
+        .isNotEqualTo(SkylarkType.of(SkylarkClassObject.class));
   }
 
   @Test
@@ -348,9 +325,8 @@ public class ValidationTest extends EvaluationTestCase {
     assertThat(SkylarkType.LIST.includes(combo1)).isTrue();
 
     SkylarkType union1 =
-        SkylarkType.Union.of(SkylarkType.DICT, SkylarkType.LIST, SkylarkType.STRUCT);
+        SkylarkType.Union.of(SkylarkType.DICT, SkylarkType.LIST);
     assertThat(union1.includes(SkylarkType.DICT)).isTrue();
-    assertThat(union1.includes(SkylarkType.STRUCT)).isTrue();
     assertThat(union1.includes(combo1)).isTrue();
     assertThat(union1.includes(SkylarkType.STRING)).isFalse();
 

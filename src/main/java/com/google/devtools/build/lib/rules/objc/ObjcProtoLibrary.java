@@ -14,16 +14,14 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import static com.google.devtools.build.lib.rules.objc.XcodeProductType.LIBRARY_STATIC;
 
+import com.google.common.base.Optional;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
-import com.google.devtools.build.lib.rules.objc.ProtoSupport.TargetType;
 
 /**
  * Implementation for the "objc_proto_library" rule.
@@ -32,51 +30,54 @@ public class ObjcProtoLibrary implements RuleConfiguredTargetFactory {
   @Override
   public ConfiguredTarget create(final RuleContext ruleContext)
       throws InterruptedException, RuleErrorException {
-    XcodeProvider.Builder xcodeProviderBuilder = new XcodeProvider.Builder();
+
+    ProtoAttributes attributes = new ProtoAttributes(ruleContext);
+    attributes.validate();
+
+    if (attributes.hasPortableProtoFilters()) {
+      return createProtobufTarget(ruleContext);
+    } else {
+      return createProtocolBuffers2Target(ruleContext);
+    }
+  }
+
+  private ConfiguredTarget createProtobufTarget(RuleContext ruleContext)
+      throws InterruptedException, RuleErrorException {
     NestedSetBuilder<Artifact> filesToBuild = NestedSetBuilder.stableOrder();
 
-    ProtoSupport protoSupport =
-        new ProtoSupport(ruleContext, TargetType.PROTO_TARGET)
-            .validate()
-            .addXcodeProviderOptions(xcodeProviderBuilder)
-            .addFilesToBuild(filesToBuild)
-            .registerActions();
+    ProtobufSupport protoSupport =
+        new ProtobufSupport(ruleContext).registerGenerationActions().addFilesToBuild(filesToBuild);
 
-    if (ruleContext.hasErrors()) {
-      return null;
-    }
-
-    ObjcCommon common = protoSupport.getCommon();
-
-    filesToBuild.addAll(common.getCompiledArchive().asSet());
+    Optional<XcodeProvider> xcodeProvider = protoSupport.getXcodeProvider();
 
     new XcodeSupport(ruleContext)
-        .addFilesToBuild(filesToBuild)
-        .addXcodeSettings(xcodeProviderBuilder, common.getObjcProvider(), LIBRARY_STATIC)
-        .addDependencies(
-            xcodeProviderBuilder, new Attribute(ObjcRuleClasses.PROTO_LIB_ATTR, Mode.TARGET))
-        .registerActions(xcodeProviderBuilder.build());
-
-    boolean usesProtobufLibrary = protoSupport.usesProtobufLibrary();
-
-    boolean experimentalAutoUnion =
-        ObjcRuleClasses.objcConfiguration(ruleContext).experimentalAutoTopLevelUnionObjCProtos();
-
-    CompilationSupport compilationSupport = new CompilationSupport(ruleContext);
-
-    // If the experimental flag is not set, or if it's set and doesn't use the protobuf library,
-    // register the compilation actions, as the output needs to be linked in the final binary.
-    if (!experimentalAutoUnion || !usesProtobufLibrary) {
-      compilationSupport.registerCompileAndArchiveActions(common);
-    } else {
-      // Even though there is nothing to compile, still generate a module map based on this target
-      // headers.
-      compilationSupport.registerGenerateModuleMapAction(common.getCompilationArtifacts());
-    }
+        .registerActions(xcodeProvider.get())
+        .addFilesToBuild(filesToBuild);
 
     return ObjcRuleClasses.ruleConfiguredTarget(ruleContext, filesToBuild.build())
-        .addProvider(XcodeProvider.class, xcodeProviderBuilder.build())
-        .addProvider(ObjcProvider.class, common.getObjcProvider())
+        .addProvider(ObjcProvider.class, protoSupport.getObjcProvider().get())
+        .addProvider(XcodeProvider.class, xcodeProvider.get())
         .build();
   }
+
+  private ConfiguredTarget createProtocolBuffers2Target(RuleContext ruleContext)
+      throws InterruptedException, RuleErrorException {
+    NestedSetBuilder<Artifact> filesToBuild = NestedSetBuilder.stableOrder();
+
+    ProtocolBuffers2Support protoSupport =
+        new ProtocolBuffers2Support(ruleContext)
+            .registerGenerationActions()
+            .registerCompilationActions()
+            .addFilesToBuild(filesToBuild);
+
+    XcodeProvider xcodeProvider = protoSupport.getXcodeProvider();
+
+    new XcodeSupport(ruleContext).registerActions(xcodeProvider).addFilesToBuild(filesToBuild);
+
+    return ObjcRuleClasses.ruleConfiguredTarget(ruleContext, filesToBuild.build())
+        .addProvider(ObjcProvider.class, protoSupport.getObjcProvider())
+        .addProvider(XcodeProvider.class, xcodeProvider)
+        .build();
+  }
+
 }

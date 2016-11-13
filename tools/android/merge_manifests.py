@@ -324,6 +324,45 @@ class MergeManifests(object):
       # append the mergee child as the first child.
       return parents[0].insertBefore(mergee_element, parents[0].firstChild)
 
+  def _OrderManifestChildren(self):
+    """Moves elements of the manifest tag into the correct order."""
+    manifest = self._merger_dom.getElementsByTagName('manifest')[0]
+    # The application element must be the last element in the manifest tag.
+    applications = self._merger_dom.getElementsByTagName('application')
+    if applications:
+      manifest.appendChild(applications[0])
+
+  def _MergeTopLevelNamespaces(self, mergee_dom):
+    """Merge the xmlns declarations in the top-level manifest nodes.
+
+    This does not handle and ignores xmlns declarations in child nodes.
+    Overall, this manifest merger does not try to interpret any attributes that
+    use the android "tools" namespace either. E.g., tools:node="remove".
+
+    This functionality is just to help migrate from this manifest merger,
+    to a new manifest merger that does handle tools annotations (a manifest
+    may be sent to both mergers during migration).
+
+    Args:
+      mergee_dom: The dom of the mergee manifest.
+    Raises:
+      MalformedManifestException: if the mergee and merger manifests contain
+      xmlns declarations that don't agree.
+    """
+    manifest = self._merger_dom.getElementsByTagName('manifest')[0]
+    mergee_manifest = mergee_dom.getElementsByTagName('manifest')[0]
+    for i in range(mergee_manifest.attributes.length):
+      attr = mergee_manifest.attributes.item(i)
+      if attr.prefix and attr.prefix == 'xmlns':
+        if manifest.hasAttribute(attr.name):
+          main_attr_value = manifest.getAttribute(attr.name)
+          if main_attr_value != attr.value:
+            raise MalformedManifestException(
+                'different values for namespace %s ("%s" vs "%s")' % (
+                    attr.name, main_attr_value, attr.value))
+        else:
+          manifest.setAttribute(attr.name, attr.value)
+
   def Merge(self):
     """Takes two manifests, and merges them together to produce a third."""
     self._RemoveFromMerger()
@@ -334,6 +373,7 @@ class MergeManifests(object):
       self._ReplaceArgumentPlaceholders(mergee_dom)
       self._ExpandPackageName(mergee_dom)
       self._ApplyExcludePermissions(mergee_dom)
+      self._MergeTopLevelNamespaces(mergee_dom)
 
       for destination, values in sorted(
           self._NODES_TO_COPY_FROM_MERGEE.iteritems()):
@@ -372,6 +412,7 @@ class MergeManifests(object):
                                   manifest_element.firstChild)
 
     self._SortAliases()
+    self._OrderManifestChildren()
     return self._merger_dom.toprettyxml(indent='  ')
 
 

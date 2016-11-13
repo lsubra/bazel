@@ -19,7 +19,6 @@ import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -41,7 +40,8 @@ public class FileStateFunction implements SkyFunction {
   }
 
   @Override
-  public SkyValue compute(SkyKey skyKey, Environment env) throws FileStateFunctionException {
+  public SkyValue compute(SkyKey skyKey, Environment env)
+      throws FileStateFunctionException, InterruptedException {
     RootedPath rootedPath = (RootedPath) skyKey.argument();
 
     try {
@@ -50,8 +50,8 @@ public class FileStateFunction implements SkyFunction {
         return null;
       }
       return FileStateValue.create(rootedPath, tsgm.get());
-    } catch (FileOutsidePackageRootsException e) {
-      throw new FileStateFunctionException(e);
+    } catch (ExternalFilesHelper.NonexistentImmutableExternalFileException e) {
+      return FileStateValue.NONEXISTENT_FILE_STATE_NODE;
     } catch (IOException e) {
       throw new FileStateFunctionException(e);
     } catch (InconsistentFilesystemException e) {
@@ -75,10 +75,6 @@ public class FileStateFunction implements SkyFunction {
 
     public FileStateFunctionException(InconsistentFilesystemException e) {
       super(e, Transience.TRANSIENT);
-    }
-
-    public FileStateFunctionException(FileOutsidePackageRootsException e) {
-      super(e, Transience.PERSISTENT);
     }
   }
 }

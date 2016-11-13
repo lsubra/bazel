@@ -14,8 +14,8 @@
 """Rules for manipulation of various packaging."""
 
 # Filetype to restrict inputs
-tar_filetype = FileType([".tar", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2"])
-deb_filetype = FileType([".deb", ".udeb"])
+tar_filetype = [".tar", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2"]
+deb_filetype = [".deb", ".udeb"]
 load(":path.bzl", "dest_path", "compute_data_path")
 
 def _pkg_tar_impl(ctx):
@@ -77,6 +77,15 @@ def _pkg_deb_impl(ctx):
     args += ["--postrm=@" + ctx.file.postrm.path]
     files += [ctx.file.postrm]
 
+  # Conffiles can be specified by a file or a string list
+  if ctx.attr.conffiles_file:
+    if ctx.attr.conffiles:
+      fail("Both conffiles and conffiles_file attributes were specified")
+    args += ["--conffile=@" + ctx.file.conffiles_file.path]
+    files += [ctx.file.conffiles_file]
+  elif ctx.attr.conffiles:
+    args += ["--conffile=%s" % cf for cf in ctx.attr.conffiles]
+
   # Version and description can be specified by a file or inlined
   if ctx.attr.version_file:
     if ctx.attr.version:
@@ -114,9 +123,12 @@ def _pkg_deb_impl(ctx):
   if ctx.attr.homepage:
     args += ["--homepage=" + ctx.attr.homepage]
 
+  args += ["--distribution=" + ctx.attr.distribution]
+  args += ["--urgency=" + ctx.attr.urgency]
   args += ["--depends=" + d for d in ctx.attr.depends]
   args += ["--suggests=" + d for d in ctx.attr.suggests]
   args += ["--enhances=" + d for d in ctx.attr.enhances]
+  args += ["--conflicts=" + d for d in ctx.attr.conflicts]
   args += ["--pre_depends=" + d for d in ctx.attr.predepends]
   args += ["--recommends=" + d for d in ctx.attr.recommends]
 
@@ -147,7 +159,7 @@ pkg_tar = rule(
         # Implicit dependencies.
         "build_tar": attr.label(
             default=Label("@bazel_tools//tools/build_defs/pkg:build_tar"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True)
     },
@@ -164,11 +176,15 @@ pkg_deb = rule(
         "data": attr.label(mandatory=True, allow_files=tar_filetype, single_file=True),
         "package": attr.string(mandatory=True),
         "architecture": attr.string(default="all"),
+        "distribution": attr.string(default="unstable"),
+        "urgency": attr.string(default="medium"),
         "maintainer": attr.string(mandatory=True),
         "preinst": attr.label(allow_files=True, single_file=True),
         "postinst": attr.label(allow_files=True, single_file=True),
         "prerm": attr.label(allow_files=True, single_file=True),
         "postrm": attr.label(allow_files=True, single_file=True),
+        "conffiles_file": attr.label(allow_files=True, single_file=True),
+        "conffiles": attr.string_list(default=[]),
         "version_file": attr.label(allow_files=True, single_file=True),
         "version": attr.string(),
         "description_file": attr.label(allow_files=True, single_file=True),
@@ -181,12 +197,13 @@ pkg_deb = rule(
         "depends": attr.string_list(default=[]),
         "suggests": attr.string_list(default=[]),
         "enhances": attr.string_list(default=[]),
+        "conflicts": attr.string_list(default=[]),
         "predepends": attr.string_list(default=[]),
         "recommends": attr.string_list(default=[]),
         # Implicit dependencies.
         "make_deb": attr.label(
             default=Label("@bazel_tools//tools/build_defs/pkg:make_deb"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True)
     },

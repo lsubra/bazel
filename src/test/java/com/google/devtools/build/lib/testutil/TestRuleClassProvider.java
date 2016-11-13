@@ -27,8 +27,8 @@ import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder;
+import com.google.devtools.build.lib.packages.SkylarkProviderIdentifier;
 import com.google.devtools.build.lib.util.FileTypeSet;
-
 import java.lang.reflect.Method;
 
 /**
@@ -43,6 +43,9 @@ public class TestRuleClassProvider {
   public static void addStandardRules(ConfiguredRuleClassProvider.Builder builder) {
     try {
       Class<?> providerClass = Class.forName(TestConstants.TEST_RULE_CLASS_PROVIDER);
+      // The method setup in the rule class provider requires the tools repository to be set
+      // beforehand.
+      builder.setToolsRepository(TestConstants.TOOLS_REPOSITORY);
       Method setupMethod = providerClass.getMethod("setup",
           ConfiguredRuleClassProvider.Builder.class);
       setupMethod.invoke(null, builder);
@@ -94,8 +97,12 @@ public class TestRuleClassProvider {
       return builder
           .setUndocumented()
           .add(attr("srcs", LABEL_LIST).allowedFileTypes(FileTypeSet.ANY_FILE))
-          .override(builder.copy("deps").mandatoryProvidersList(ImmutableList.of(
-              ImmutableList.of("a"), ImmutableList.of("b", "c"))))
+          .override(builder.copy("deps").mandatoryProvidersList(
+              ImmutableList.of(
+                ImmutableList.of(SkylarkProviderIdentifier.forLegacy("a")),
+                ImmutableList.of(
+                    SkylarkProviderIdentifier.forLegacy("b"),
+                    SkylarkProviderIdentifier.forLegacy("c")))))
           .build();
     }
 

@@ -24,6 +24,9 @@ cc_library(
         "//src:windows": [
             "blaze_util_mingw.cc",
         ],
+        "//src:windows_msvc": [
+            "blaze_util_msvc.cc",
+        ],
         "//conditions:default": [
             "blaze_util_linux.cc",
             "blaze_util_posix.cc",
@@ -35,8 +38,10 @@ cc_library(
     ],
     linkopts = select({
         "//src:darwin": [
+            "-framework CoreFoundation",
         ],
         "//src:darwin_x86_64": [
+            "-framework CoreFoundation",
         ],
         "//src:freebsd": [
         ],
@@ -47,7 +52,14 @@ cc_library(
     deps = [
         "//src/main/cpp/util",
         "//src/main/cpp/util:blaze_exit_code",
-    ],
+    ] + select({
+        "//src:darwin": [],
+        "//src:darwin_x86_64": [],
+        "//src:freebsd": [],
+        "//src:windows": [],
+        "//src:windows_msvc": [],
+        "//conditions:default": ["//src/main/cpp/util:file_posix"],
+    }),
 )
 
 cc_library(
@@ -67,16 +79,19 @@ cc_binary(
     name = "client",
     srcs = [
         "blaze.cc",
-        "blaze_globals.h",
-        "blaze_startup_options.cc",
-        "blaze_startup_options.h",
-        "blaze_startup_options_common.cc",
+        "blaze.h",
+        "global_variables.cc",
+        "global_variables.h",
+        "main.cc",
         "option_processor.cc",
         "option_processor.h",
+        "startup_options.cc",
+        "startup_options.h",
+        "workspace_layout.cc",
+        "workspace_layout.h",
     ],
     copts = [
         "-Wno-sign-compare",
-        "-DBLAZE_JAVA_CPU=\"k8\"",
     ],
     linkopts = select({
         "//src:darwin": [
@@ -85,6 +100,7 @@ cc_binary(
         ],
         "//src:freebsd": [
             "-lprocstat",
+            "-lm",
         ],
         "//conditions:default": [
             "-lrt",

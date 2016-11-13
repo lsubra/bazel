@@ -37,7 +37,6 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
   public AspectDefinition getDefinition(AspectParameters aspectParameters) {
     return new AspectDefinition.Builder(NAME)
         .attributeAspect("deps", this)
-        .requiresConfigurationFragments(ObjcConfiguration.class)
         .build();
   }
 
@@ -46,12 +45,6 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
       ConfiguredTarget base, RuleContext ruleContext, AspectParameters parameters)
       throws InterruptedException {
     ConfiguredAspect.Builder aspectBuilder = new ConfiguredAspect.Builder(NAME, ruleContext);
-    ObjcConfiguration objcConfiguration = ruleContext.getFragment(ObjcConfiguration.class);
-
-    if (!objcConfiguration.experimentalAutoTopLevelUnionObjCProtos()) {
-      // Only process the aspect if the experimental flag is set.
-      return aspectBuilder.build();
-    }
 
     ObjcProtoProvider.Builder aspectObjcProtoProvider = new ObjcProtoProvider.Builder();
 
@@ -77,13 +70,22 @@ public class ObjcProtoAspect extends NativeAspectClass implements ConfiguredAspe
           ruleContext.getPrerequisites("deps", Mode.TARGET, ProtoSourcesProvider.class);
 
       for (ProtoSourcesProvider protoProvider : protoProviders) {
-        aspectObjcProtoProvider.addProtoSources(protoProvider.getTransitiveProtoSources());
+        aspectObjcProtoProvider.addProtoGroup(protoProvider.getTransitiveProtoSources());
       }
+
+      // Propagate protobuf's headers and search paths so the BinaryLinkingTargetFactory subclasses
+      // (i.e. objc_binary) don't have to depend on it.
+      ObjcProvider protobufObjcProvider =
+          ruleContext.getPrerequisite(
+              ObjcRuleClasses.PROTO_LIB_ATTR, Mode.TARGET, ObjcProvider.class);
+      aspectObjcProtoProvider.addProtobufHeaders(protobufObjcProvider.get(ObjcProvider.HEADER));
+      aspectObjcProtoProvider.addProtobufHeaderSearchPaths(
+          protobufObjcProvider.get(ObjcProvider.INCLUDE));
     }
 
     // Only add the provider if it has any values, otherwise skip it.
     if (!aspectObjcProtoProvider.isEmpty()) {
-      aspectBuilder.addProvider(ObjcProtoProvider.class, aspectObjcProtoProvider.build());
+      aspectBuilder.addProvider(aspectObjcProtoProvider.build());
     }
     return aspectBuilder.build();
   }

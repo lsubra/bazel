@@ -57,6 +57,8 @@
 
 namespace blaze_util {
 
+using std::string;
+
 static const unsigned int k8Bytes = 64;
 static const unsigned int k8ByteMask = 63;
 
@@ -156,9 +158,8 @@ void Md5Digest::Finish(unsigned char digest[16]) {
 
   /* Put the 64-bit file length in *bits* at the end of the buffer.  */
   unsigned int size = (ctx_buffer_len < 56 ? 64 : 128);
-  *(reinterpret_cast<uint32_t*>(ctx_buffer + size - 8)) = count[0] << 3;
-  *(reinterpret_cast<uint32_t*>(ctx_buffer + size - 4)) =
-      (count[1] << 3) | (count[0] >> 29);
+  uint32_t words[2] = { count[0] << 3, (count[1] << 3) | (count[0] >> 29) };
+  memcpy(ctx_buffer + size - 8, words, 8);
 
   memcpy(ctx_buffer + ctx_buffer_len, kPadding, size - 8 - ctx_buffer_len);
 

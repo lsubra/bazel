@@ -15,13 +15,13 @@
 package com.google.devtools.build.lib.syntax;
 
 import static com.google.devtools.build.lib.syntax.Parser.ParsingMode.BUILD;
-import static com.google.devtools.build.lib.syntax.Parser.ParsingMode.PYTHON;
 import static com.google.devtools.build.lib.syntax.Parser.ParsingMode.SKYLARK;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.Location;
@@ -29,9 +29,7 @@ import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.syntax.DictionaryLiteral.DictionaryEntryLiteral;
 import com.google.devtools.build.lib.syntax.IfStatement.ConditionalStatements;
-import com.google.devtools.build.lib.syntax.SkylarkImports.SkylarkImportSyntaxException;
 import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -40,7 +38,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.Nullable;
 
 /**
  * Recursive descent parser for LL(2) BUILD language.
@@ -85,8 +82,6 @@ public class Parser {
     BUILD,
     /** Used for parsing .bzl files */
     SKYLARK,
-    /** Used for syntax checking, ignoring all Python blocks (e.g. def, class, try) */
-    PYTHON,
   }
 
   private static final EnumSet<TokenKind> STATEMENT_TERMINATOR_SET =
@@ -191,7 +186,7 @@ public class Parser {
       EnumSet.of(Operator.MINUS, Operator.PLUS),
       EnumSet.of(Operator.DIVIDE, Operator.MULT, Operator.PERCENT));
 
-  private Iterator<Token> tokens = null;
+  private final Iterator<Token> tokens;
   private int errorsCount;
   private boolean recoveryMode;  // stop reporting errors until next statement
 
@@ -208,52 +203,39 @@ public class Parser {
     if (!statements.isEmpty()) {
       return lexer.createLocation(
           statements.get(0).getLocation().getStartOffset(),
-          statements.get(statements.size() - 1).getLocation().getEndOffset());
+          Iterables.getLast(statements).getLocation().getEndOffset());
     } else {
       return Location.fromPathFragment(lexer.getFilename());
     }
   }
 
   /**
-   * Entry-point to parser that parses a build file with comments.  All errors
-   * encountered during parsing are reported via "reporter".
+   * Entry-point to parser that parses a build file with comments. All errors encountered during
+   * parsing are reported via "reporter".
    */
-  public static ParseResult parseFile(
-      ParserInputSource input, EventHandler eventHandler, boolean parsePython) {
-    Lexer lexer = new Lexer(input, eventHandler, parsePython);
-    ParsingMode parsingMode = parsePython ? PYTHON : BUILD;
-    Parser parser = new Parser(lexer, eventHandler, parsingMode);
+  public static ParseResult parseFile(ParserInputSource input, EventHandler eventHandler) {
+    Lexer lexer = new Lexer(input, eventHandler);
+    Parser parser = new Parser(lexer, eventHandler, BUILD);
     List<Statement> statements = parser.parseFileInput();
     return new ParseResult(statements, parser.comments, locationFromStatements(lexer, statements),
         parser.errorsCount > 0 || lexer.containsErrors());
   }
 
   /**
-   * Entry-point to parser that parses a build file with comments.  All errors
-   * encountered during parsing are reported via "reporter".  Enable Skylark extensions
-   * that are not part of the core BUILD language.
+   * Entry-point to parser that parses a build file with comments. All errors encountered during
+   * parsing are reported via "reporter". Enable Skylark extensions that are not part of the core
+   * BUILD language.
    */
   public static ParseResult parseFileForSkylark(
-      ParserInputSource input,
-      EventHandler eventHandler,
-      @Nullable ValidationEnvironment validationEnvironment) {
-    Lexer lexer = new Lexer(input, eventHandler, false);
+      ParserInputSource input, EventHandler eventHandler) {
+    Lexer lexer = new Lexer(input, eventHandler);
     Parser parser = new Parser(lexer, eventHandler, SKYLARK);
     List<Statement> statements = parser.parseFileInput();
-    boolean hasSemanticalErrors = false;
-    try {
-      if (validationEnvironment != null) {
-        validationEnvironment.validateAst(statements);
-      }
-    } catch (EvalException e) {
-      // Do not report errors caused by a previous parsing error, as it has already been reported.
-      if (!e.isDueToIncompleteAST()) {
-        eventHandler.handle(Event.error(e.getLocation(), e.getMessage()));
-      }
-      hasSemanticalErrors = true;
-    }
-    return new ParseResult(statements, parser.comments, locationFromStatements(lexer, statements),
-        parser.errorsCount > 0 || lexer.containsErrors() || hasSemanticalErrors);
+    return new ParseResult(
+        statements,
+        parser.comments,
+        locationFromStatements(lexer, statements),
+        parser.errorsCount > 0 || lexer.containsErrors());
   }
 
   /**
@@ -263,7 +245,7 @@ public class Parser {
    */
   @VisibleForTesting
   public static Expression parseExpression(ParserInputSource input, EventHandler eventHandler) {
-    Lexer lexer = new Lexer(input, eventHandler, false);
+    Lexer lexer = new Lexer(input, eventHandler);
     Parser parser = new Parser(lexer, eventHandler, null);
     Expression result = parser.parseExpression();
     while (parser.token.kind == TokenKind.NEWLINE) {
@@ -359,17 +341,20 @@ public class Parser {
           TokenKind.TRY, TokenKind.WITH, TokenKind.WHILE, TokenKind.YIELD);
 
   private void checkForbiddenKeywords(Token token) {
-    if (parsingMode == PYTHON || !FORBIDDEN_KEYWORDS.contains(token.kind)) {
+    if (!FORBIDDEN_KEYWORDS.contains(token.kind)) {
       return;
     }
     String error;
     switch (token.kind) {
       case ASSERT: error = "'assert' not supported, use 'fail' instead"; break;
-      case TRY: error = "'try' not supported, all exceptions are fatal"; break;
+      case DEL:
+        error = "'del' not supported, use '.pop()' to delete an item from a dictionary or a list";
+        break;
       case IMPORT: error = "'import' not supported, use 'load' instead"; break;
       case IS: error = "'is' not supported, use '==' instead"; break;
       case LAMBDA: error = "'lambda' not supported, declare a function instead"; break;
       case RAISE: error = "'raise' not supported, use 'fail' instead"; break;
+      case TRY: error = "'try' not supported, all exceptions are fatal"; break;
       case WHILE: error = "'while' not supported, use 'for' instead"; break;
       default: error = "keyword '" + token.kind.getPrettyName() + "' not supported"; break;
     }
@@ -721,29 +706,25 @@ public class Parser {
 
   // substring_suffix ::= '[' expression? ':' expression?  ':' expression? ']'
   private Expression parseSubstringSuffix(int start, Expression receiver) {
-    List<Argument.Passed> args = new ArrayList<>();
     Expression startExpr;
 
     expect(TokenKind.LBRACKET);
-    int loc1 = token.left;
     if (token.kind == TokenKind.COLON) {
       startExpr = setLocation(new Identifier("None"), token.left, token.right);
     } else {
       startExpr = parseExpression();
     }
-    args.add(setLocation(new Argument.Positional(startExpr), loc1, startExpr));
-    // This is a dictionary access
+    // This is an index/key access
     if (token.kind == TokenKind.RBRACKET) {
       expect(TokenKind.RBRACKET);
-      return makeFuncallExpression(receiver, new Identifier("$index"), args,
-                                   start, token.right);
+      return setLocation(new IndexExpression(receiver, startExpr), start, token.right);
     }
     // This is a slice (or substring)
-    args.add(parseSliceArgument(new Identifier("None")));
-    args.add(parseSliceArgument(new IntegerLiteral(1)));
+    Expression endExpr = parseSliceArgument(new Identifier("None"));
+    Expression stepExpr = parseSliceArgument(new IntegerLiteral(1));
     expect(TokenKind.RBRACKET);
-    return makeFuncallExpression(receiver, new Identifier("$slice"), args,
-                                 start, token.right);
+    return setLocation(new SliceExpression(receiver, startExpr, endExpr, stepExpr),
+        start, token.right);
   }
 
   /**
@@ -751,11 +732,12 @@ public class Parser {
    * operation. If no such expression is found, this method returns an argument that represents
    * {@code defaultValue}.
    */
-  private Argument.Positional parseSliceArgument(Expression defaultValue) {
+  private Expression parseSliceArgument(Expression defaultValue) {
     Expression explicitArg = getSliceEndOrStepExpression();
-    Expression argValue =
-        (explicitArg == null) ? setLocation(defaultValue, token.left, token.right) : explicitArg;
-    return setLocation(new Argument.Positional(argValue), token.left, argValue);
+    if (explicitArg == null) {
+      return setLocation(defaultValue, token.left, token.right);
+    }
+    return explicitArg;
   }
 
   private Expression getSliceEndOrStepExpression() {
@@ -1073,28 +1055,21 @@ public class Parser {
     }
     expect(TokenKind.RPAREN);
 
-    SkylarkImport imp;
-    try {
-      imp = SkylarkImports.create(importString.getValue());
-      LoadStatement stmt = new LoadStatement(imp, importString.getLocation(), symbols);
-      list.add(setLocation(stmt, start, token.left));
-    } catch (SkylarkImportSyntaxException e) {
-      String msg = "Load statement parameter '" + importString + "' is invalid. "
-          + e.getMessage();
-      reportError(importString.getLocation(), msg);
-    }
+    LoadStatement stmt = new LoadStatement(importString, symbols);
+    list.add(setLocation(stmt, start, token.left));
   }
 
   /**
    * Parses the next symbol argument of a load statement and puts it into the output map.
    *
    * <p> The symbol is either "name" (STRING) or name = "declared" (IDENTIFIER EQUALS STRING).
-   * "Declared" refers to the original name in the bazel file that should be loaded.
-   * Moreover, it will be the key of the entry in the map.
-   * If no alias is used, "name" and "declared" will be identical.
+   * If no alias is used, "name" and "declared" will be identical. "Declared" refers to the
+   * original name in the Bazel file that should be loaded, while "name" will be the key of the
+   * entry in the map.
    */
   private void parseLoadSymbol(Map<Identifier, String> symbols) {
-    Token nameToken, declaredToken;
+    Token nameToken;
+    Token declaredToken;
 
     if (token.kind == TokenKind.STRING) {
       nameToken = token;
@@ -1119,10 +1094,12 @@ public class Parser {
 
       if (symbols.containsKey(identifier)) {
         syntaxError(
-            nameToken, String.format("Symbol '%s' has already been loaded", identifier.getName()));
+            nameToken, String.format("Identifier '%s' is used more than once",
+                identifier.getName()));
       } else {
         symbols.put(
-            setLocation(identifier, nameToken.left, token.left), declaredToken.value.toString());
+            setLocation(identifier, nameToken.left, nameToken.right),
+            declaredToken.value.toString());
       }
     } catch (NullPointerException npe) {
       // This means that the value of at least one token is null. In this case, the previous
@@ -1456,7 +1433,7 @@ public class Parser {
       reportError(
           lexer.createLocation(blockToken.left, blockToken.right),
           "syntax error at 'else': not allowed here.");
-    } else if (parsingMode != PYTHON) {
+    } else {
       String msg =
           ILLEGAL_BLOCK_KEYWORDS.containsKey(blockToken.kind)
               ? String.format("%ss are not supported.", ILLEGAL_BLOCK_KEYWORDS.get(blockToken.kind))

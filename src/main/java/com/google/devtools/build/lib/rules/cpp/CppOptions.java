@@ -31,11 +31,9 @@ import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.LipoMode;
 import com.google.devtools.common.options.Converter;
-import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsParsingException;
-
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -107,6 +105,13 @@ public class CppOptions extends FragmentOptions {
   public static class LibcTopConverter implements Converter<LibcTop> {
     @Override
     public LibcTop convert(String input) throws OptionsParsingException {
+      if (input.equals("default")) {
+        // This is needed for defining config_setting() values, the syntactic form
+        // of which must be a String, to match absence of a --grte_top option.
+        // "--grte_top=default" works on the command-line too,
+        // but that's an inconsequential side-effect, not the intended purpose.
+        return null;
+      }
       if (!input.startsWith("//")) {
         throw new OptionsParsingException("Not a label");
       }
@@ -167,16 +172,6 @@ public class CppOptions extends FragmentOptions {
             + "By default, a suitable version is chosen based on --cpu."
   )
   public String glibc;
-
-  @Option(
-    name = "thin_archives",
-    defaultValue = "false",
-    category = "strategy", // but also adds edges to the action graph
-    help =
-        "Pass the 'T' flag to ar if supported by the toolchain. "
-            + "All supported toolchains support this setting."
-  )
-  public boolean useThinArchives;
 
   // O intrepid reaper of unused options: Be warned that the [no]start_end_lib
   // option, however tempting to remove, has a use case. Look in our telemetry data.
@@ -372,8 +367,9 @@ public class CppOptions extends FragmentOptions {
     implicitRequirements = {"--copt=-Wno-error"},
     help =
         "Generate binaries with FDO instrumentation. Specify the relative "
-            + "directory name for the .gcda files at runtime. It also accepts "
-            + "an LLVM profile output file path."
+            + "directory name for the .gcda files at runtime with GCC compiler. "
+            + "With Clang/LLVM compiler, it also accepts the directory name under"
+            + "which the raw profile file(s) will be dumped at runtime."
   )
   public PathFragment fdoInstrument;
 
@@ -489,16 +485,6 @@ public class CppOptions extends FragmentOptions {
   public List<String> hostCoptList;
 
   @Option(
-    name = "define",
-    converter = Converters.AssignmentConverter.class,
-    defaultValue = "",
-    category = "semantics",
-    allowMultiple = true,
-    help = "Each --define option specifies an assignment for a build variable."
-  )
-  public List<Map.Entry<String, String>> commandLineDefinedVariables;
-
-  @Option(
     name = "grte_top",
     defaultValue = "null", // The default value is chosen by the toolchain.
     category = "version",
@@ -564,8 +550,6 @@ public class CppOptions extends FragmentOptions {
   public FragmentOptions getHost(boolean fallback) {
     CppOptions host = (CppOptions) getDefault();
 
-    host.commandLineDefinedVariables = commandLineDefinedVariables;
-
     // The crosstool options are partially copied from the target configuration.
     if (!fallback) {
       if (hostCrosstoolTop == null) {
@@ -587,7 +571,6 @@ public class CppOptions extends FragmentOptions {
     // -g0 first and let the user options override it.
     host.coptList = ImmutableList.<String>builder().add("-g0").addAll(hostCoptList).build();
 
-    host.useThinArchives = useThinArchives;
     host.useStartEndLib = useStartEndLib;
     host.stripBinaries = StripMode.ALWAYS;
     host.fdoOptimize = null;

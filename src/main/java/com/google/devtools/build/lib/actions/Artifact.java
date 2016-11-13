@@ -28,6 +28,7 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.shell.ShellUtils;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
 import com.google.devtools.build.lib.syntax.EvalUtils;
 import com.google.devtools.build.lib.syntax.Printer;
@@ -35,12 +36,10 @@ import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
-
 import javax.annotation.Nullable;
 
 /**
@@ -91,8 +90,15 @@ import javax.annotation.Nullable;
  */
 @Immutable
 @SkylarkModule(name = "File",
-    doc = "This type represents a file used by the build system. It can be "
-        + "either a source file or a derived file produced by a rule.")
+    category = SkylarkModuleCategory.BUILTIN,
+    doc = "<p>This type represents a file used by the build system. It can be "
+        + "either a source file or a derived file produced by a rule.</p>"
+        + "<p>The File constructor is private, so you cannot call it directly to create new "
+        + "Files. If you have a Skylark rule that needs to create a new File, you might need to "
+        + "add the label to the attrs (if it's an input) or the outputs (if it's an output). Then "
+        + "you can access the File through the rule's <a href='ctx.html'>context</a>. You can "
+        + "also use <a href='ctx.html#new_file'>ctx.new_file</a> to create a new file in the rule "
+        + "implementation.</p>")
 public class Artifact
     implements FileType.HasFilename, ActionInput, SkylarkValue, Comparable<Object> {
 
@@ -113,6 +119,15 @@ public class Artifact
       }
     }
   };
+
+  /** Compares artifacts according to their root relative paths. */
+  public static final Comparator<Artifact> ROOT_RELATIVE_PATH_COMPARATOR =
+      new Comparator<Artifact>() {
+        @Override
+        public int compare(Artifact lhs, Artifact rhs) {
+          return lhs.getRootRelativePath().compareTo(rhs.getRootRelativePath());
+        }
+      };
 
   @Override
   public int compareTo(Object o) {
@@ -147,6 +162,17 @@ public class Artifact
     }
   };
 
+  /**
+   * A Predicate that evaluates to true if the Artifact <b>is</b> a tree artifact.
+   */
+  public static final Predicate<Artifact> IS_TREE_ARTIFACT = new Predicate<Artifact>() {
+    @Override
+    public boolean apply(Artifact input) {
+      return input.isTreeArtifact();
+    }
+  };
+
+  private final int hashCode;
   private final Path path;
   private final Root root;
   private final PathFragment execPath;
@@ -180,6 +206,7 @@ public class Artifact
       throw new IllegalArgumentException(execPath + ": illegal execPath for " + path
           + " (root: " + root + ")");
     }
+    this.hashCode = path.hashCode();
     this.path = path;
     this.root = root;
     this.execPath = execPath;
@@ -273,6 +300,11 @@ public class Artifact
     return getExecPath().getBaseName();
   }
 
+  @SkylarkCallable(name = "extension", structField = true, doc = "The file extension of this file.")
+  public final String getExtension() {
+    return getExecPath().getFileExtension();
+  }
+
   /**
    * Returns the artifact owner. May be null.
    */
@@ -292,7 +324,7 @@ public class Artifact
   }
 
   @SkylarkCallable(name = "owner", structField = true, allowReturnNones = true,
-    doc = "A label of a target that produces this File. Can be None."
+    doc = "A label of a target that produces this File."
   )
   public Label getOwnerLabel() {
     return owner.getLabel();
@@ -572,7 +604,10 @@ public class Artifact
 
   @Override
   public final int hashCode() {
-    return path.hashCode();
+    // This is just path.hashCode().  We cache a copy in the Artifact object to reduce LLC misses
+    // during operations which build a HashSet out of many Artifacts.  This is a slight loss for
+    // memory but saves ~1% overall CPU in some real builds.
+    return hashCode;
   }
 
   @Override

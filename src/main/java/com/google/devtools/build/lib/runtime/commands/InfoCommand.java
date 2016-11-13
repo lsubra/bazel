@@ -14,16 +14,13 @@
 package com.google.devtools.build.lib.runtime.commands;
 
 import com.google.common.base.Supplier;
-import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.NoBuildEvent;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.events.Event;
-import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.runtime.BlazeCommand;
-import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.Command;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
@@ -34,7 +31,6 @@ import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsProvider;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -117,8 +113,7 @@ public class InfoCommand implements BlazeCommand {
           // package path. Since info inherits all the build options, all the necessary information
           // is available here.
           env.setupPackageCache(
-              optionsProvider.getOptions(PackageCacheOptions.class),
-              runtime.getDefaultsPackageContent(optionsProvider));
+              optionsProvider, runtime.getDefaultsPackageContent(optionsProvider));
           // TODO(bazel-team): What if there are multiple configurations? [multi-config]
           configuration = env
               .getConfigurations(optionsProvider)
@@ -188,35 +183,39 @@ public class InfoCommand implements BlazeCommand {
       return e.getExitCode();
     } catch (IOException e) {
       return ExitCode.LOCAL_ENVIRONMENTAL_ERROR;
+    } catch (InterruptedException e) {
+      return ExitCode.INTERRUPTED;
     }
     return ExitCode.SUCCESS;
   }
 
   static Map<String, InfoItem> getHardwiredInfoItemMap(OptionsProvider commandOptions,
       String productName) {
-    List<InfoItem> hardwiredInfoItems = ImmutableList.<InfoItem>of(
-        new InfoItem.WorkspaceInfoItem(),
-        new InfoItem.InstallBaseInfoItem(),
-        new InfoItem.OutputBaseInfoItem(productName),
-        new InfoItem.ExecutionRootInfoItem(),
-        new InfoItem.OutputPathInfoItem(),
-        new InfoItem.BlazeBinInfoItem(productName),
-        new InfoItem.BlazeGenfilesInfoItem(productName),
-        new InfoItem.BlazeTestlogsInfoItem(productName),
-        new InfoItem.CommandLogInfoItem(),
-        new InfoItem.MessageLogInfoItem(),
-        new InfoItem.ReleaseInfoItem(productName),
-        new InfoItem.ServerPidInfoItem(productName),
-        new InfoItem.PackagePathInfoItem(commandOptions),
-        new InfoItem.UsedHeapSizeInfoItem(),
-        new InfoItem.UsedHeapSizeAfterGcInfoItem(),
-        new InfoItem.CommitedHeapSizeInfoItem(),
-        new InfoItem.MaxHeapSizeInfoItem(),
-        new InfoItem.GcTimeInfoItem(),
-        new InfoItem.GcCountInfoItem(),
-        new InfoItem.DefaultsPackageInfoItem(),
-        new InfoItem.BuildLanguageInfoItem(),
-        new InfoItem.DefaultPackagePathInfoItem(commandOptions));
+    List<InfoItem> hardwiredInfoItems =
+        ImmutableList.<InfoItem>of(
+            new InfoItem.WorkspaceInfoItem(),
+            new InfoItem.InstallBaseInfoItem(),
+            new InfoItem.OutputBaseInfoItem(productName),
+            new InfoItem.ExecutionRootInfoItem(),
+            new InfoItem.OutputPathInfoItem(),
+            new InfoItem.ClientEnv(),
+            new InfoItem.BlazeBinInfoItem(productName),
+            new InfoItem.BlazeGenfilesInfoItem(productName),
+            new InfoItem.BlazeTestlogsInfoItem(productName),
+            new InfoItem.CommandLogInfoItem(),
+            new InfoItem.MessageLogInfoItem(),
+            new InfoItem.ReleaseInfoItem(productName),
+            new InfoItem.ServerPidInfoItem(productName),
+            new InfoItem.PackagePathInfoItem(commandOptions),
+            new InfoItem.UsedHeapSizeInfoItem(),
+            new InfoItem.UsedHeapSizeAfterGcInfoItem(),
+            new InfoItem.CommitedHeapSizeInfoItem(),
+            new InfoItem.MaxHeapSizeInfoItem(),
+            new InfoItem.GcTimeInfoItem(),
+            new InfoItem.GcCountInfoItem(),
+            new InfoItem.DefaultsPackageInfoItem(),
+            new InfoItem.BuildLanguageInfoItem(),
+            new InfoItem.DefaultPackagePathInfoItem(commandOptions));
     ImmutableMap.Builder<String, InfoItem> result = new ImmutableMap.Builder<>();
     for (InfoItem item : hardwiredInfoItems) {
       result.put(item.getName(), item);
@@ -233,15 +232,9 @@ public class InfoCommand implements BlazeCommand {
   }
 
   static Map<String, InfoItem> getInfoItemMap(
-      CommandEnvironment env, OptionsProvider commandOptions) {
-    Map<String, InfoItem> result = new TreeMap<>();  // order by key
-    for (BlazeModule module : env.getRuntime().getBlazeModules()) {
-      for (InfoItem item : module.getInfoItems()) {
-        Verify.verify(!result.containsKey(item.getName()));
-        result.put(item.getName(), item);
-      }
-    }
-    result.putAll(getHardwiredInfoItemMap(commandOptions, env.getRuntime().getProductName()));
-    return result;
+      CommandEnvironment env, OptionsProvider optionsProvider) {
+    Map<String, InfoItem> items = new TreeMap<>(env.getRuntime().getInfoItems());
+    items.putAll(getHardwiredInfoItemMap(optionsProvider, env.getRuntime().getProductName()));
+    return items;
   }
 }

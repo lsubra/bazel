@@ -52,6 +52,7 @@ import com.google.devtools.build.lib.util.CommandFailureUtils;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.OptionsUtils;
+import com.google.devtools.build.lib.util.OsUtils;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.util.ShellEscaper;
 import com.google.devtools.build.lib.util.io.OutErr;
@@ -62,7 +63,6 @@ import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsProvider;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -103,7 +103,7 @@ public class RunCommand implements BlazeCommand  {
   @VisibleForTesting
   public static final String NO_TARGET_MESSAGE = "No targets found to run";
 
-  private static final String PROCESS_WRAPPER = "process-wrapper";
+  private static final String PROCESS_WRAPPER = "process-wrapper" + OsUtils.executableExtension();
 
   // Value of --run_under as of the most recent command invocation.
   private RunUnder currentRunUnder;
@@ -275,11 +275,11 @@ public class RunCommand implements BlazeCommand  {
           runUnderValue += " " + ShellEscaper.escapeJoinAll(opts);
         }
       }
-      cmdLine.add(configuration.getShExecutable().getPathString());
+      cmdLine.add(configuration.getShellExecutable().getPathString());
       cmdLine.add("-c");
       cmdLine.add(runUnderValue + " " + executablePath.getPathString() + " " +
           ShellEscaper.escapeJoinAll(args));
-      prettyCmdLine.add(configuration.getShExecutable().getPathString());
+      prettyCmdLine.add(configuration.getShellExecutable().getPathString());
       prettyCmdLine.add("-c");
       prettyCmdLine.add(runUnderValue + " " + prettyExecutablePath.getPathString() + " " +
           ShellEscaper.escapeJoinAll(args));
@@ -357,9 +357,12 @@ public class RunCommand implements BlazeCommand  {
 
     Artifact manifest = runfilesSupport.getRunfilesManifest();
     PathFragment runfilesDir = runfilesSupport.getRunfilesDirectoryExecPath();
-    Path workingDir = env.getExecRoot()
-        .getRelative(runfilesDir)
-        .getRelative(runfilesSupport.getRunfiles().getSuffix());
+    Path workingDir = env.getExecRoot().getRelative(runfilesDir);
+    // On Windows, runfiles tree is disabled.
+    // Workspace name directory doesn't exist, so don't add it.
+    if (target.getConfiguration().runfilesEnabled()) {
+      workingDir = workingDir.getRelative(runfilesSupport.getRunfiles().getSuffix());
+    }
 
     // When runfiles are not generated, getManifest() returns the
     // .runfiles_manifest file, otherwise it returns the MANIFEST file. This is
@@ -370,8 +373,8 @@ public class RunCommand implements BlazeCommand  {
     }
 
     SymlinkTreeHelper helper = new SymlinkTreeHelper(
-        manifest.getExecPath(),
-        runfilesDir,
+        manifest.getPath(),
+        runfilesSupport.getRunfilesDirectory(),
         false);
     helper.createSymlinksUsingCommand(env.getExecRoot(), target.getConfiguration(),
         env.getBlazeWorkspace().getBinTools());

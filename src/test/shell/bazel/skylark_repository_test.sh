@@ -17,11 +17,11 @@
 # Test the local_repository binding
 #
 
-# Load test environment
-src_dir=$(cd "$(dirname ${BASH_SOURCE[0]})" && pwd)
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
-source "$src_dir/remote_helpers.sh" \
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
+source "${CURRENT_DIR}/remote_helpers.sh" \
   || { echo "remote_helpers.sh not found!" >&2; exit 1; }
 
 # Basic test.
@@ -326,7 +326,7 @@ def _impl(repository_ctx):
   bin = repository_ctx.which("bin.sh")
   if bin == None:
     fail("bin.sh not found!")
-  result = repository_ctx.execute([bash, "--version"])
+  result = repository_ctx.execute([bash, "--version"], 10, {"FOO": "BAR"})
   if result.return_code != 0:
     fail("Non-zero return code from bash: " + str(result.return_code))
   if result.stderr != "":
@@ -335,7 +335,8 @@ def _impl(repository_ctx):
 repo = repository_rule(implementation=_impl, local=True)
 EOF
 
-  PATH="${PATH}:${PWD}" bazel build @foo//:bar >& $TEST_log || fail "Failed to build"
+  FOO="BAZ" PATH="${PATH}:${PWD}" bazel build @foo//:bar >& $TEST_log \
+      || fail "Failed to build"
   expect_log "version"
 }
 
@@ -483,7 +484,7 @@ def _impl(repository_ctx):
     "download_with_sha256.txt", "${file_sha256}")
   repository_ctx.download(
     "http://localhost:${fileserver_port}/download_executable_file.sh",
-    "download_executable_file.sh", True)
+    "download_executable_file.sh", executable=True)
   repository_ctx.file("BUILD")  # necessary directories should already created by download function
 repo = repository_rule(implementation=_impl, local=False)
 EOF
@@ -656,6 +657,22 @@ EOF
   bazel query //... >& $TEST_log || fail "Failed to build"
   expect_log "existing = True,True"
   expect_log "non_existing = False,False"
+}
+
+function test_build_a_repo() {
+  cat > WORKSPACE <<EOF
+load("//:repo.bzl", "my_repo")
+my_repo(name = "reg")
+EOF
+
+  cat > repo.bzl <<EOF
+def _impl(repository_ctx):
+  pass
+
+my_repo = repository_rule(_impl)
+EOF
+
+  bazel build //external:reg &> $TEST_log || fail "Couldn't build repo"
 }
 
 function tear_down() {

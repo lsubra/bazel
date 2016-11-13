@@ -13,15 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import com.android.ide.common.res2.MergingException;
 import com.google.common.base.MoreObjects;
 import com.google.devtools.build.android.proto.SerializeFormat;
 import com.google.protobuf.CodedOutputStream;
-
-import com.android.ide.common.res2.MergingException;
-
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.file.FileSystem;
 import java.nio.file.Path;
 import java.util.Objects;
 
@@ -45,9 +42,8 @@ public class DataValueFile implements DataResource, DataAsset {
   /**
    * Creates a {@link DataValueFile} from a {@link SerializeFormat.DataValue}.
    */
-  public static DataValueFile from(
-      SerializeFormat.DataValue protoValue, FileSystem currentFileSystem) {
-    return of(currentFileSystem.getPath(protoValue.getSource().getFilename()));
+  public static DataValueFile from(Path source) {
+    return of(source);
   }
 
   @Override
@@ -83,31 +79,28 @@ public class DataValueFile implements DataResource, DataAsset {
   @Override
   public void writeResource(FullyQualifiedName key, AndroidDataWritingVisitor mergedDataWriter)
       throws IOException, MergingException {
-    mergedDataWriter.copyResource(source, key.toPathString(getSourceExtension()));
+    mergedDataWriter.copyResource(source, key.toPathString(source));
   }
 
   @Override
-  public int serializeTo(DataKey key, OutputStream output) throws IOException {
+  public int serializeTo(DataKey key, DataSourceTable sourceTable, OutputStream output)
+      throws IOException {
     SerializeFormat.DataValue.Builder builder = SerializeFormat.DataValue.newBuilder();
-    SerializeFormat.DataValue value =
-        builder.setSource(builder.getSourceBuilder().setFilename(source.toString())).build();
+    SerializeFormat.DataValue value = builder.setSourceId(sourceTable.getSourceId(source)).build();
     value.writeDelimitedTo(output);
     return CodedOutputStream.computeUInt32SizeNoTag(value.getSerializedSize())
         + value.getSerializedSize();
-  }
-
-  private String getSourceExtension() {
-    // TODO(corysmith): Find out if there is a filename parser utility.
-    String fileName = source.getFileName().toString();
-    int extensionStart = fileName.lastIndexOf('.');
-    if (extensionStart > 0) {
-      return fileName.substring(extensionStart);
-    }
-    return "";
   }
 
   @Override
   public DataResource combineWith(DataResource resource) {
     throw new IllegalArgumentException(getClass() + " does not combine.");
   }
+
+  @Override
+  public void writeResourceToClass(FullyQualifiedName key,
+      AndroidResourceClassWriter resourceClassWriter) {
+    resourceClassWriter.writeSimpleResource(key.type(), key.name());
+  }
+
 }

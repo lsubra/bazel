@@ -14,10 +14,9 @@
 
 package com.google.testing.junit.runner.junit4;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
 import com.google.testing.junit.runner.model.TestSuiteModel;
 import com.google.testing.junit.runner.model.TestSuiteModel.Builder;
+import com.google.testing.junit.runner.util.Supplier;
 
 import org.junit.runner.Description;
 import org.junit.runner.Request;
@@ -50,7 +49,9 @@ class JUnit4TestModelBuilder implements Supplier<TestSuiteModel> {
   @Override
   public TestSuiteModel get() {
     Description root = request.getRunner().getDescription();
-    Preconditions.checkArgument(root.isSuite(), "Top test must be a suite");
+    if (!root.isSuite()) {
+      throw new IllegalArgumentException("Top test must be a suite");
+    }
     return builder.build(suiteName, root);
   }
 }

@@ -13,8 +13,8 @@ sh_test(
         "../local_jdk/bin/java",
         "../local_jdk/bin/jar",
         "../local_jdk/bin/javap",
-        "io_bazel/$(location //third_party/ijar)",
-        "io_bazel/$(location //tools/jdk:langtools)",
+        "$(location //third_party/ijar)",
+        "$(location //tools/jdk:langtools)",
         # We assume unzip and zip to be on the path
         "unzip",
         "zip",
@@ -37,7 +37,6 @@ sh_test(
         ":definitely_zip64.jar",
         ":zip_count",
         "TypeAnnotationTest2.java",
-        # invokedynamic/ClassWithLambda.java, compiled with javac8
         ":libinvokedynamic.jar",
         # Intentionally bad test JAR: file count in central directory
         # wrong.
@@ -46,7 +45,10 @@ sh_test(
         "//tools/jdk:langtools",
     ],
     shard_count = 5,
-    tags = ["zip"],
+    tags = [
+        "jdk8",
+        "zip",
+    ],
 )
 
 sh_test(
@@ -71,7 +73,6 @@ java_library(
     name = "invokedynamic",
     testonly = 1,
     srcs = ["invokedynamic/ClassWithLambda.java"],
-    javacopts = ["-source 8 -target 8"],
     tags = ["jdk8"],
 )
 
@@ -103,14 +104,14 @@ genrule(
 java_library(
     name = "typeannotations2",
     srcs = glob(["typeannotations2/**/*.java"]),
-    javacopts = ["-source 8 -target 8"],
     tags = ["jdk8"],
 )
 
 java_library(
     name = "methodparameters",
     srcs = ["methodparameters/Test.java"],
-    javacopts = ["-source 8 -target 8 -parameters"],
+    javacopts = ["-parameters"],
+    tags = ["jdk8"],
 )
 
 java_binary(

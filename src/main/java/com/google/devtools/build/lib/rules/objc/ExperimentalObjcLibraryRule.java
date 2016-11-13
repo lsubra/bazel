@@ -17,9 +17,9 @@ package com.google.devtools.build.lib.rules.objc;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
+import com.google.devtools.build.lib.packages.ImplicitOutputsFunction;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder;
-import com.google.devtools.build.lib.packages.RuleClass.PackageNameConstraint;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
 
@@ -32,9 +32,9 @@ public class ExperimentalObjcLibraryRule implements RuleDefinition {
     return builder
         .requiresConfigurationFragments(
             ObjcConfiguration.class, AppleConfiguration.class, CppConfiguration.class)
-        // experimental_objc_library should only occur in bazel test code.  We use the /objc
-        // directory for tests.
-        .setValidityPredicate(new PackageNameConstraint(1, "objc"))
+        .setImplicitOutputsFunction(
+            ImplicitOutputsFunction.fromFunctions(
+                CompilationSupport.FULLY_LINKED_LIB, XcodeSupport.PBXPROJ))
         .build();
   }
 
@@ -47,6 +47,7 @@ public class ExperimentalObjcLibraryRule implements RuleDefinition {
             BaseRuleClasses.BaseRule.class,
             ObjcRuleClasses.LinkingRule.class,
             ObjcRuleClasses.AlwaysLinkRule.class,
+            ObjcRuleClasses.XcodegenRule.class,
             ObjcRuleClasses.CrosstoolRule.class)
         .build();
   }

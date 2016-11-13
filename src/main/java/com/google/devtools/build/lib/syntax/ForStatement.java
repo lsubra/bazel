@@ -84,41 +84,23 @@ public final class ForStatement extends Statement {
   void doExec(Environment env) throws EvalException, InterruptedException {
     Object o = collection.eval(env);
     Iterable<?> col = EvalUtils.toIterable(o, getLocation());
+    EvalUtils.lock(o, getLocation());
+    try {
+      for (Object it : col) {
+        variable.assign(env, getLocation(), it);
 
-    int i = 0;
-    for (Object it : ImmutableList.copyOf(col)) {
-      variable.assign(env, getLocation(), it);
-
-      try {
-        for (Statement stmt : block) {
-          stmt.exec(env);
-        }
-      } catch (FlowException ex) {
-        if (ex.mustTerminateLoop()) {
-          return;
+        try {
+          for (Statement stmt : block) {
+            stmt.exec(env);
+          }
+        } catch (FlowException ex) {
+          if (ex.mustTerminateLoop()) {
+            return;
+          }
         }
       }
-
-      i++;
-    }
-
-    checkConcurrentModification(col, i, this);
-  }
-
-  /**
-   * Check for concurrent modification by comparing the size of the original, possibly modified,
-   * collection against the size counted during evaluation.
-   *
-   * <p>public for reflection access by compiler and invocation by compiled code
-   */
-  public static void checkConcurrentModification(
-      Iterable<?> collection, int countedSize, ASTNode forStatement) throws EvalException {
-    if (countedSize != EvalUtils.size(collection)) {
-      throw new EvalException(
-          forStatement.getLocation(),
-          String.format(
-              "Cannot modify '%s' during iteration.",
-              ((ForStatement) forStatement).collection.toString()));
+    } finally {
+      EvalUtils.unlock(o, getLocation());
     }
   }
 
@@ -151,6 +133,7 @@ public final class ForStatement extends Statement {
   ByteCodeAppender compile(
       VariableScope scope, Optional<LoopLabels> outerLoopLabels, DebugInfo debugInfo)
       throws EvalException {
+    // TODO(bazel-team): Remove obsolete logic for counting size of iterated collection.
     AstAccessors debugAccessors = debugInfo.add(this);
     List<ByteCodeAppender> code = new ArrayList<>();
     InternalVariable originalIterable =
@@ -196,20 +179,8 @@ public final class ForStatement extends Statement {
         iterator.load(),
         ByteCodeMethodCalls.BCIterator.hasNext,
         // falls through to end of loop if hasNext() was false, otherwise jumps back
-        Jump.ifIntOperandToZero(PrimitiveComparison.NOT_EQUAL).to(loopBody));
-    append(
-        code,
-        breakLoop,
-        // load arguments for checkConcurrentModification and call it
-        originalIterable.load(),
-        sizeCounterVariable.load(),
-        debugAccessors.loadAstNode,
-        ByteCodeUtils.invoke(
-            ForStatement.class,
-            "checkConcurrentModification",
-            Iterable.class,
-            int.class,
-            ASTNode.class));
+        Jump.ifIntOperandToZero(PrimitiveComparison.NOT_EQUAL).to(loopBody),
+        breakLoop);
     return ByteCodeUtils.compoundAppender(code);
   }
 }

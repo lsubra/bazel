@@ -22,10 +22,16 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.PackageSpecification;
+import com.google.devtools.build.lib.packages.SkylarkClassObjectConstructor;
+import com.google.devtools.build.lib.packages.SkylarkProviderIdentifier;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.syntax.ClassObject;
+import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.syntax.EvalUtils;
 import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
+import javax.annotation.Nullable;
 
 /**
  * An abstract implementation of ConfiguredTarget in which all properties are
@@ -72,6 +78,15 @@ public abstract class AbstractConfiguredTarget
     return configuration;
   }
 
+  @Nullable
+  @Override
+  public Object get(SkylarkProviderIdentifier id) {
+    if (id.isLegacy()) {
+      return get(id.getLegacyId());
+    }
+    return get(id.getKey());
+  }
+
   @Override
   public Label getLabel() {
     return getTarget().getLabel();
@@ -82,6 +97,7 @@ public abstract class AbstractConfiguredTarget
     return "ConfiguredTarget(" + getTarget().getLabel() + ", " + getConfiguration() + ")";
   }
 
+  @Nullable
   @Override
   public <P extends TransitiveInfoProvider> P getProvider(Class<P> provider) {
     AnalysisUtils.checkProvider(provider);
@@ -98,7 +114,7 @@ public abstract class AbstractConfiguredTarget
       case LABEL_FIELD:
         return getLabel();
       case FILES_FIELD:
-        // A shortcut for files to build in Skylark. FileConfiguredTarget and RunleConfiguredTarget
+        // A shortcut for files to build in Skylark. FileConfiguredTarget and RuleConfiguredTarget
         // always has FileProvider and Error- and PackageGroupConfiguredTarget-s shouldn't be
         // accessible in Skylark.
         return SkylarkNestedSet.of(
@@ -111,7 +127,46 @@ public abstract class AbstractConfiguredTarget
         return get(name);
     }
   }
-  
+
+  @Override
+  public Object getIndex(Object key, Location loc) throws EvalException {
+    if (!(key instanceof SkylarkClassObjectConstructor)) {
+      throw new EvalException(loc, String.format(
+          "Type Target only supports indexing by object constructors, got %s instead",
+          EvalUtils.getDataTypeName(key)));
+    }
+    SkylarkClassObjectConstructor constructor = (SkylarkClassObjectConstructor) key;
+    SkylarkProviders provider = getProvider(SkylarkProviders.class);
+    if (provider != null) {
+      Object declaredProvider = provider.getDeclaredProvider(constructor.getKey());
+      if (declaredProvider != null) {
+        return declaredProvider;
+      }
+    }
+    // Either provider or declaredProvider is null
+    throw new EvalException(loc, String.format(
+        "Object of type Target doesn't contain declared provider %s",
+        constructor.getKey().getExportedName()));
+  }
+
+  @Override
+  public boolean containsKey(Object key, Location loc) throws EvalException {
+    if (!(key instanceof SkylarkClassObjectConstructor)) {
+      throw new EvalException(loc, String.format(
+          "Type Target only supports querying by object constructors, got %s instead",
+          EvalUtils.getDataTypeName(key)));
+    }
+    SkylarkClassObjectConstructor constructor = (SkylarkClassObjectConstructor) key;
+    SkylarkProviders provider = getProvider(SkylarkProviders.class);
+    if (provider != null) {
+      Object declaredProvider = provider.getDeclaredProvider(constructor.getKey());
+      if (declaredProvider != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   @Override
   public String errorMessage(String name) {
     return null;

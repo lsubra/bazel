@@ -18,12 +18,13 @@
 #
 
 # Load test environment
-src_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source ${src_dir}/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
-source ${src_dir}/bazel_sandboxing_test_utils.sh \
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
+source ${CURRENT_DIR}/bazel_sandboxing_test_utils.sh \
   || { echo "bazel_sandboxing_test_utils.sh not found!" >&2; exit 1; }
-source ${src_dir}/remote_helpers.sh \
+source ${CURRENT_DIR}/remote_helpers.sh \
   || { echo "remote_helpers.sh not found!" >&2; exit 1; }
 
 cat >>$TEST_TMPDIR/bazelrc <<'EOF'
@@ -222,8 +223,7 @@ function test_sandbox_cleanup() {
   bazel build examples/genrule:tools_work &> $TEST_log \
     || fail "Hermetic genrule failed: examples/genrule:tools_work"
   bazel shutdown &> $TEST_log || fail "bazel shutdown failed"
-  ls -la "$(bazel info execution_root)/bazel-sandbox"
-  if [[ "$(ls -A "$(bazel info execution_root)"/bazel-sandbox)" ]]; then
+  if [[ -n "$(ls -A "$(bazel info output_base)/bazel-sandbox")" ]]; then
     fail "Build left files around afterwards"
   fi
 }
@@ -301,7 +301,7 @@ function test_sandbox_undeclared_deps_skylark_with_local_tag() {
 function test_sandbox_block_filesystem() {
   output_file="${BAZEL_GENFILES_DIR}/examples/genrule/breaks2.txt"
 
-  bazel build examples/genrule:breaks2 &> $TEST_log \
+  bazel build --sandbox_block_path=/var/log examples/genrule:breaks2 &> $TEST_log \
     && fail "Non-hermetic genrule succeeded: examples/genrule:breaks2" || true
 
   [ -f "$output_file" ] ||
@@ -311,7 +311,7 @@ function test_sandbox_block_filesystem() {
     fail "Output contained more than one line: $output_file"
   fi
 
-  fgrep "No such file or directory" $output_file ||
+  fgrep "Permission denied" $output_file ||
     fail "Output did not contain expected error message: $output_file"
 }
 
@@ -329,17 +329,15 @@ function test_sandbox_network_access() {
   cat << EOF >> examples/genrule/BUILD
 
 genrule(
-  name = "breaks4",
-  outs = [ "breaks4.txt" ],
+  name = "sandbox_network_access",
+  outs = [ "sandbox_network_access.txt" ],
   cmd = "curl -o \$@ localhost:${nc_port}",
 )
 EOF
-  bazel build examples/genrule:breaks1 &> $TEST_log \
-    && fail "Non-hermetic genrule succeeded: examples/genrule:breaks4" || true
-  [ ! -f "${BAZEL_GENFILES_DIR}/examples/genrule/breaks4.txt" ] || {
-    output=$(cat "${BAZEL_GENFILES_DIR}/examples/genrule/breaks4.txt")
-    fail "Non-hermetic genrule breaks1 succeeded with following output: $output"
-  }
+  bazel build examples/genrule:sandbox_network_access &> $TEST_log \
+    || fail "genrule 'sandbox_network_access' trying to use network failed, but should have succeeded"
+  [ -f "${BAZEL_GENFILES_DIR}/examples/genrule/sandbox_network_access.txt" ] \
+    || fail "genrule 'sandbox_network_access' did not produce output"
   kill_nc
 }
 
@@ -348,90 +346,104 @@ function test_sandbox_network_access_with_local() {
   cat << EOF >> examples/genrule/BUILD
 
 genrule(
-  name = "breaks4_works_with_local",
-  outs = [ "breaks4_works_with_local.txt" ],
+  name = "sandbox_network_access_with_local",
+  outs = [ "sandbox_network_access_with_local.txt" ],
   cmd = "curl -o \$@ localhost:${nc_port}",
   tags = [ "local" ],
 )
 EOF
-  bazel build examples/genrule:breaks4_works_with_local &> $TEST_log \
-    || fail "Non-hermetic genrule failed even though tags=['local']: examples/genrule:breaks4_works_with_local"
-  [ -f "${BAZEL_GENFILES_DIR}/examples/genrule/breaks4_works_with_local.txt" ] \
-    || fail "Genrule did not produce output: examples/genrule:breaks4_works_with_local"
+  bazel build examples/genrule:sandbox_network_access_with_local &> $TEST_log \
+    || fail "genrule 'sandbox_network_access_with_local' trying to use network failed, but should have succeeded"
+  [ -f "${BAZEL_GENFILES_DIR}/examples/genrule/sandbox_network_access_with_local.txt" ] \
+    || fail "genrule 'sandbox_network_access_with_local' did not produce output"
   kill_nc
 }
 
-function test_sandbox_network_access_with_requires_network() {
+function test_sandbox_network_access_with_block_network() {
   serve_file file_to_serve
   cat << EOF >> examples/genrule/BUILD
 
 genrule(
-  name = "breaks4_works_with_requires_network",
-  outs = [ "breaks4_works_with_requires_network.txt" ],
+  name = "sandbox_network_access_with_block_network",
+  outs = [ "sandbox_network_access_with_block_network.txt" ],
   cmd = "curl -o \$@ localhost:${nc_port}",
-  tags = [ "requires-network" ],
+  tags = [ "block-network" ],
 )
 EOF
-  bazel build examples/genrule:breaks4_works_with_requires_network &> $TEST_log \
-    || fail "Non-hermetic genrule failed even though tags=['requires-network']: examples/genrule:breaks4_works_with_requires_network"
-  [ -f "${BAZEL_GENFILES_DIR}/examples/genrule/breaks4_works_with_requires_network.txt" ] \
-    || fail "Genrule did not produce output: examples/genrule:breaks4_works_with_requires_network"
+  bazel build examples/genrule:sandbox_network_access_with_block_network &> $TEST_log \
+    && fail "genrule 'sandbox_network_access_with_block_network' trying to use network succeeded, but should have failed" || true
+  [ ! -f "${BAZEL_GENFILES_DIR}/examples/genrule/breaks4_works_with_requires_network.txt" ] \
+    || fail "genrule 'sandbox_network_access_with_block_network' produced output, but was expected to fail"
   kill_nc
 }
 
-function test_sandbox_add_path_valid_path() {
-  output_file="${BAZEL_GENFILES_DIR}/examples/genrule/breaks2.txt"
+# TODO(philwo) - this doesn't work on Ubuntu 14.04 due to "unshare" being too
+# old and not understanding the --user flag.
+function DISABLED_test_sandbox_different_nobody_uid() {
+  cat /etc/passwd | sed 's/\(^nobody:[^:]*:\)[0-9]*:[0-9]*/\15000:16000/g' > \
+      "${TEST_TMPDIR}/passwd"
+  unshare --user --mount --map-root-user -- bash - \
+      << EOF || fail "Hermetic genrule with different UID for nobody failed" \
+set -e
+set -u
 
-  bazel build --sandbox_add_path=/var/log examples/genrule:breaks2 &> $TEST_log \
-    || fail "Non-hermetic genrule failed: examples/genrule:breaks2 (with additional path)"
-
-  [ -f "$output_file" ] ||
-    fail "Action did not produce output: $output_file"
-
-  if [ $(wc -l < $output_file) -le 1 ]; then
-    fail "Output contained less than or equal to one line: $output_file"
-  fi
-}
-
-function test_sandbox_add_path_workspace_parent() {
-  output_file="${BAZEL_GENFILES_DIR}/examples/genrule/check_sandbox_contain_WORKSPACE.txt"
-  parent_path="$(dirname "$(pwd)")"
-
-  bazel build --sandbox_add_path=$parent_path examples/genrule:check_sandbox_contain_WORKSPACE &> $TEST_log \
-    || fail "Non-hermetic genrule succeeded: examples/genrule:works (with additional path)"
-  [ -f "$output_file" ] \
-    || fail "Genrule did not produce output: examples/genrule:check_sandbox_contain_WORKSPACE (with additional path: WORKSPACE/..)"
-  cat $output_file &> $TEST_log
-
-  # file and directory inside workspace (except project) should not be mounted
-  egrep "\bWORKSPACE\b" $output_file \
-    && fail "WORKSPACE file should not be mounted." || true
-}
-
-function test_sandbox_add_path_workspace_child() {
-  child_path="$(pwd)/examples"
-  output_file="${BAZEL_GENFILES_DIR}/examples/genrule/works.txt"
-
-  bazel build --sandbox_add_path=$child_path examples/genrule:works &> $TEST_log \
-    && fail "Non-hermetic genrule succeeded: examples/genrule:works (with additional path: WORKSPACE:/examples)" || true
-
-  expect_log "Mounting subdirectory of WORKSPACE or OUTPUTBASE to sandbox is not allowed"
-}
-
-function test_sandbox_fail_command() {
-  mkdir -p "javatests/orange"
-  echo "java_test(name = 'Orange', srcs = ['Orange.java'])" > javatests/orange/BUILD
-  cat > javatests/orange/Orange.java <<EOF
-package orange;
-import junit.framework.TestCase;
-public class Orange extends TestCase {
-  public void testFails() { fail("juice"); }
-}
+mount --bind ${TEST_TMPDIR}/passwd /etc/passwd
+bazel build examples/genrule:works &> ${TEST_log}
 EOF
-  bazel test --sandbox_debug --verbose_failures //javatests/orange:Orange >& $TEST_log \
-    && fail "Expected failure" || true
+}
 
-  expect_log "Sandboxed execution failed, which may be legitimate"
+function test_succeeding_action_with_ioexception_while_copying_outputs_throws_correct_exception() {
+  cat > BUILD <<'EOF'
+genrule(
+  name = "test",
+  outs = ["readonlydir/output.txt"],
+  cmd = "touch $(location readonlydir/output.txt); chmod 0 $(location readonlydir/output.txt); chmod 0500 `dirname $(location readonlydir/output.txt)`",
+)
+EOF
+  bazel build :test &> $TEST_log \
+    && fail "build should have failed" || true
+
+  # This is the generic "we caught an IOException" log message used by the
+  # SandboxedStrategy. We don't want to see this in this case, because we have
+  # special handling that prints a better error message and then lets the
+  # sandbox code throw the actual ExecException.
+  expect_not_log "I/O error during sandboxed execution"
+
+  # There was no ExecException during sandboxed execution, because the action
+  # returned an exit code of 0.
+  expect_not_log "Executing genrule //:test failed: linux-sandbox failed: error executing command"
+
+  # This is the error message printed by the EventHandler telling us that some
+  # output artifacts couldn't be copied.
+  expect_log "ERROR: I/O exception while extracting output artifacts from sandboxed execution.*(Permission denied)"
+
+  # The build fails, because the action didn't generate its output artifact.
+  expect_log "ERROR:.*declared output 'readonlydir/output.txt' was not created by genrule"
+}
+
+function test_failing_action_with_ioexception_while_copying_outputs_throws_correct_exception() {
+  cat > BUILD <<'EOF'
+genrule(
+  name = "test",
+  outs = ["readonlydir/output.txt"],
+  cmd = "touch $(location readonlydir/output.txt); chmod 0 $(location readonlydir/output.txt); chmod 0500 `dirname $(location readonlydir/output.txt)`; exit 1",
+)
+EOF
+  bazel build :test &> $TEST_log \
+    && fail "build should have failed" || true
+
+  # This is the generic "we caught an IOException" log message used by the
+  # SandboxedStrategy. We don't want to see this in this case, because we have
+  # special handling that prints a better error message and then lets the
+  # sandbox code throw the actual ExecException.
+  expect_not_log "I/O error during sandboxed execution"
+
+  # This is the error message printed by the EventHandler telling us that some
+  # output artifacts couldn't be copied.
+  expect_log "ERROR: I/O exception while extracting output artifacts from sandboxed execution.*(Permission denied)"
+
+  # This is the UserExecException telling us that the build failed.
+  expect_log "Executing genrule //:test failed: linux-sandbox failed: error executing command"
 }
 
 # The test shouldn't fail if the environment doesn't support running it.

@@ -32,7 +32,8 @@ public class WorkerOptions extends OptionsBase {
       "--strategy=Javac=worker",
       "--strategy=JavaIjar=local",
       "--strategy=JavaDeployJar=local",
-      "--strategy=JavaSourceJar=local"
+      "--strategy=JavaSourceJar=local",
+      "--strategy=Turbine=local"
     }
   )
   public Void experimentalPersistentJavac;
@@ -70,4 +71,12 @@ public class WorkerOptions extends OptionsBase {
     help = "If enabled, prints verbose messages when workers are started, shutdown, ..."
   )
   public boolean workerVerbose;
+
+  @Option(
+    name = "worker_sandboxing",
+    defaultValue = "false",
+    category = "strategy",
+    help = "If enabled, workers will be executed in a sandboxed environment."
+  )
+  public boolean workerSandboxing;
 }

@@ -15,7 +15,7 @@
 # This is a quick and dirty rule to make Bazel compile itself.  It
 # only supports Java.
 
-proto_filetype = FileType([".proto"])
+proto_filetype = [".proto"]
 
 def gensrcjar_impl(ctx):
   out = ctx.outputs.srcjar
@@ -31,7 +31,8 @@ def gensrcjar_impl(ctx):
         ctx.executable._gensrcjar.path,
     ]),
     inputs=([ctx.file.src] + ctx.files._gensrcjar + ctx.files._jar +
-            ctx.files._jdk + ctx.files._proto_compiler),
+            ctx.files._jdk + ctx.files._proto_compiler +
+            ctx.files.grpc_java_plugin),
     outputs=[out],
     mnemonic="GenProtoSrcJar",
     use_default_shell_env=True)
@@ -46,12 +47,13 @@ gensrcjar = rule(
             single_file = True,
         ),
         "grpc_java_plugin": attr.label(
-            cfg = HOST_CFG,
+            cfg = "host",
             executable = True,
             single_file = True,
         ),
         "_gensrcjar": attr.label(
-            default = Label(str(Label("//tools/build_rules:gensrcjar"))),
+            default = Label("//tools/build_rules:gensrcjar"),
+            cfg = "host",
             executable = True,
         ),
         # TODO(bazel-team): this should be a hidden attribute with a default
@@ -59,12 +61,14 @@ gensrcjar = rule(
         "_proto_compiler": attr.label(
             default = Label("//third_party/protobuf:protoc"),
             allow_files = True,
+            cfg = "host",
             executable = True,
             single_file = True,
         ),
         "_jar": attr.label(
             default = Label("@bazel_tools//tools/jdk:jar"),
             allow_files = True,
+            cfg = "host",
             executable = True,
             single_file = True,
         ),

@@ -13,10 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import com.android.ide.common.res2.MergingException;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
+import com.google.common.base.MoreObjects;
+import com.google.common.base.Predicate;
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.Collections2;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
@@ -38,6 +42,7 @@ import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 
 /**
  * Filters a {@link MergedAndroidData} resource drawables to the specified densities.
@@ -79,6 +84,17 @@ public class DensitySpecificResourceFilter {
     public String getResid() {
       return this.resid;
     }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("resource", resource)
+          .add("restype", restype)
+          .add("qualifiers", qualifiers)
+          .add("density", density)
+          .add("resid", resid)
+          .toString();
+    }
   }
 
   private static class RecursiveFileCopier extends SimpleFileVisitor<Path> {
@@ -118,6 +134,7 @@ public class DensitySpecificResourceFilter {
           .put("hdpi", 240)
           .put("280dpi", 280)
           .put("xhdpi", 320)
+          .put("340dpi", 340)
           .put("400dpi", 400)
           .put("420dpi", 420)
           .put("xxhdpi", 480)
@@ -154,14 +171,28 @@ public class DensitySpecificResourceFilter {
    * @param out The path to use for name spacing the final resource directory.
    * @param working The path of the working directory for the filtering
    */
-  public DensitySpecificResourceFilter(List<String> densities, Path out, Path working) {
+  public DensitySpecificResourceFilter(List<String> densities, Path out, Path working)
+      throws MergingException {
     this.densities = densities;
     this.out = out;
     this.working = working;
+
+    for (String density : densities) {
+      if (!DENSITY_MAP.containsKey(density)) {
+        throw MergingException.withMessage(density + " is not a known density qualifier.").build();
+      }
+    }
   }
 
   @VisibleForTesting
   List<Path> getResourceToRemove(List<Path> resourcePaths) {
+    Predicate<ResourceInfo> requestedDensityFilter = new Predicate<ResourceInfo>() {
+      @Override
+      public boolean apply(@Nullable ResourceInfo info) {
+        return !densities.contains(info.getDensity());
+      }
+    };
+
     List<ResourceInfo> resourceInfos = getResourceInfos(resourcePaths);
     List<ResourceInfo> densityResourceInfos = filterDensityResourceInfos(resourceInfos);
     List<ResourceInfo> resourceInfoToRemove = new ArrayList<>();
@@ -184,8 +215,9 @@ public class DensitySpecificResourceFilter {
                   return matchScore(info, densities);
                 }
               }).immutableSortedCopy(qualifierResourceInfos);
-
-          resourceInfoToRemove.addAll(sortedResourceInfos.subList(1, sortedResourceInfos.size()));
+          resourceInfoToRemove.addAll(Collections2.filter(
+              sortedResourceInfos.subList(1, sortedResourceInfos.size()),
+              requestedDensityFilter));
         }
       }
     }

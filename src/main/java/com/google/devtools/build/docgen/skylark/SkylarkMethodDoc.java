@@ -13,14 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.docgen.skylark;
 
-import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkInterfaceUtils;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
-
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,10 +26,8 @@ import java.util.List;
 /**
  * An abstract class containing documentation for a Skylark method.
  */
-abstract class SkylarkMethodDoc extends SkylarkDoc {
-  /**
-   * Returns whether the Skylark method is documented.
-   */
+public abstract class SkylarkMethodDoc extends SkylarkDoc {
+  /** Returns whether the Skylark method is documented. */
   public abstract boolean documented();
 
   /**
@@ -57,17 +53,30 @@ abstract class SkylarkMethodDoc extends SkylarkDoc {
   }
 
   private String getParameterString(Method method) {
-    return Joiner.on(", ").join(Iterables.transform(
-        ImmutableList.copyOf(method.getParameterTypes()), new Function<Class<?>, String>() {
-          @Override
-          public String apply(Class<?> input) {
-            return getTypeAnchor(input);
-          }
-        }));
+    SkylarkCallable annotation = SkylarkInterfaceUtils.getSkylarkCallable(method);
+    int nbPositional = annotation.mandatoryPositionals();
+    if (annotation.parameters().length > 0 && nbPositional < 0) {
+      nbPositional = 0;
+    }
+    List<String> argList = new ArrayList<>();
+    for (int i = 0; i < nbPositional; i++) {
+      argList.add("arg" + i + ":" + getTypeAnchor(method.getParameterTypes()[i]));
+    }
+    boolean named = false;
+    for (Param param : annotation.parameters()) {
+      if (param.named() && !param.positional() && !named) {
+        named = true;
+        if (!argList.isEmpty()) {
+          argList.add("*");
+        }
+      }
+      argList.add(formatParameter(param));
+    }
+    return Joiner.on(", ").join(argList);
   }
 
   protected String getSignature(String objectName, String methodName, Method method) {
-    String args = method.getAnnotation(SkylarkCallable.class).structField()
+    String args = SkylarkInterfaceUtils.getSkylarkCallable(method).structField()
         ? "" : "(" + getParameterString(method) + ")";
 
     return String.format("%s %s.%s%s",
@@ -76,24 +85,21 @@ abstract class SkylarkMethodDoc extends SkylarkDoc {
 
   protected String getSignature(String objectName, SkylarkSignature method) {
     List<String> argList = new ArrayList<>();
-    for (Param param : adjustedMandatoryPositionals(method)) {
-      argList.add(param.name());
+    boolean named = false;
+    for (Param param : adjustedParameters(method)) {
+      if (param.named() && !param.positional() && !named) {
+        named = true;
+        if (!method.extraPositionals().name().isEmpty()) {
+          argList.add("*" + method.extraPositionals().name());
+        }
+        if (!argList.isEmpty()) {
+          argList.add("*");
+        }
+      }
+      argList.add(formatParameter(param));
     }
-    for (Param param : method.optionalPositionals()) {
-      argList.add(formatOptionalParameter(param));
-    }
-    if (!method.extraPositionals().name().isEmpty()) {
+    if (!named && !method.extraPositionals().name().isEmpty()) {
       argList.add("*" + method.extraPositionals().name());
-    }
-    if (!argList.isEmpty() && method.extraPositionals().name().isEmpty()
-        && (method.optionalNamedOnly().length > 0 || method.mandatoryNamedOnly().length > 0)) {
-      argList.add("*");
-    }
-    for (Param param : method.mandatoryNamedOnly()) {
-      argList.add(param.name());
-    }
-    for (Param param : method.optionalNamedOnly()) {
-      argList.add(formatOptionalParameter(param));
     }
     if (!method.extraKeywords().name().isEmpty()) {
       argList.add("**" + method.extraKeywords().name());
@@ -108,9 +114,13 @@ abstract class SkylarkMethodDoc extends SkylarkDoc {
     }
   }
 
-  private String formatOptionalParameter(Param param) {
+  private String formatParameter(Param param) {
     String defaultValue = param.defaultValue();
-    return String.format("%s=%s", param.name(),
-        (defaultValue == null || defaultValue.isEmpty()) ? "&hellip;" : defaultValue);
+    String name = param.name();
+    if (defaultValue == null || !defaultValue.isEmpty()) {
+      return String.format("%s=%s", name, defaultValue == null ? "&hellip;" : defaultValue);
+    } else {
+      return name;
+    }
   }
 }

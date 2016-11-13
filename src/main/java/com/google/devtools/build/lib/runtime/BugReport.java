@@ -14,13 +14,13 @@
 package com.google.devtools.build.lib.runtime;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BlazeVersionInfo;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.LoggingUtil;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.util.io.OutErr;
-
 import java.io.PrintStream;
 import java.util.Arrays;
 import java.util.List;
@@ -89,7 +89,10 @@ public abstract class BugReport {
           if (runtime != null) {
             runtime.notifyCommandComplete(exitCode);
             // We don't call runtime#shutDown() here because all it does is shut down the modules,
-            // and who knows if they can be trusted.
+            // and who knows if they can be trusted. Instead, we call runtime#shutdownOnCrash()
+            // which attempts to cleanly shutdown those modules that might have something pending
+            // to do as a best-effort operation.
+            runtime.shutdownOnCrash();
           }
         } finally {
           // Avoid shutdown deadlock issues: If an application shutdown hook crashes, it will
@@ -122,7 +125,7 @@ public abstract class BugReport {
 
   /** Get exit code corresponding to throwable. */
   public static int getExitCodeForThrowable(Throwable throwable) {
-    return (throwable instanceof OutOfMemoryError)
+    return (Throwables.getRootCause(throwable) instanceof OutOfMemoryError)
         ? ExitCode.OOM_ERROR.getNumericExitCode()
         : ExitCode.BLAZE_INTERNAL_ERROR.getNumericExitCode();
   }

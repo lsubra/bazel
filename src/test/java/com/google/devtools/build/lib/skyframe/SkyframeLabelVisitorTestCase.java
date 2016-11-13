@@ -38,7 +38,6 @@ import com.google.devtools.build.lib.packages.util.PackageLoadingTestCase;
 import com.google.devtools.build.lib.packages.util.PreprocessorUtils;
 import com.google.devtools.build.lib.pkgcache.TransitivePackageLoader;
 import com.google.devtools.build.lib.testutil.ManualClock;
-import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
@@ -49,9 +48,6 @@ import com.google.devtools.build.skyframe.DelegatingWalkableGraph;
 import com.google.devtools.build.skyframe.InMemoryMemoizingEvaluator;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.WalkableGraph;
-
-import org.junit.Before;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -59,8 +55,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import javax.annotation.Nullable;
+import org.junit.Before;
 
 abstract public class SkyframeLabelVisitorTestCase extends PackageLoadingTestCase {
   // Convenience constants, so test args are readable vs true/false
@@ -180,7 +176,8 @@ abstract public class SkyframeLabelVisitorTestCase extends PackageLoadingTestCas
    * loaded targets.
    */
   public static Set<Label> getVisitedLabels(
-      Iterable<Label> startingLabels, SkyframeExecutor skyframeExecutor) {
+      Iterable<Label> startingLabels, SkyframeExecutor skyframeExecutor)
+      throws InterruptedException {
     final WalkableGraph graph =
         new DelegatingWalkableGraph(
             ((InMemoryMemoizingEvaluator) skyframeExecutor.getEvaluatorForTesting())
@@ -282,9 +279,7 @@ abstract public class SkyframeLabelVisitorTestCase extends PackageLoadingTestCas
 
   @Before
   public final void initializeVisitor() throws Exception {
-    setUpSkyframe(
-        ConstantRuleVisibility.PRIVATE,
-        ruleClassProvider.getDefaultsPackageContent(TestConstants.TEST_INVOCATION_POLICY));
+    setUpSkyframe(ConstantRuleVisibility.PRIVATE, loadingMock.getDefaultsPackageContent());
     this.visitor = skyframeExecutor.pkgLoader();
   }
 

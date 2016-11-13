@@ -21,10 +21,6 @@ import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
-
-import org.joda.time.format.DateTimeFormat;
-import org.joda.time.format.DateTimeFormatter;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -32,6 +28,8 @@ import java.util.EnumSet;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.joda.time.format.DateTimeFormat;
+import org.joda.time.format.DateTimeFormatter;
 
 /**
  * BlazeCommandEventHandler: an event handler established for the duration of a
@@ -112,8 +110,9 @@ public class BlazeCommandEventHandler implements EventHandler {
     @Option(name = "emacs",
             defaultValue = "false",
             category = "undocumented",
-            help = "A system-generated parameter which is true iff EMACS=t in the environment of "
-               + "the client.  This option controls certain display features.")
+            help = "A system-generated parameter which is true iff EMACS=t or INSIDE_EMACS is set "
+               + "in the environment of the client.  This option controls certain display "
+               + "features.")
     public boolean runningInEmacs;
 
     @Option(name = "show_timestamps",
@@ -144,9 +143,9 @@ public class BlazeCommandEventHandler implements EventHandler {
     @Option(
       name = "experimental_ui",
       defaultValue = "false",
-      category = "hidden",
-      help = "Enable the experimental new Bazel UI."
-    )
+      category = "verbosity",
+      help = "Switches to an alternative progress bar that more explicitly shows progress, such "
+          + "as loaded packages and executed actions.")
     public boolean experimentalUi;
 
     @Option(
@@ -157,6 +156,26 @@ public class BlazeCommandEventHandler implements EventHandler {
     )
     public boolean experimentalUiDebugAllEvents;
 
+    @Option(
+      name = "experimental_ui_actions_shown",
+      defaultValue = "3",
+      category = "verbosity",
+      help =
+          "Number of concurrent actions shown in the alternative progress bar; each "
+              + "action is shown on a separate line. The alternative progress bar always shows "
+              + "at least one one, all numbers less than 1 are mapped to 1. "
+              + "This option has no effect unless --experimental_ui is set."
+    )
+    public int experimentalUiActionsShown;
+
+
+    @Option(
+      name = "experimental_build_event_text_file",
+      defaultValue = "",
+      category = "hidden",
+      help = "If non-empty, write a textual representation of the build event protocol to that file"
+    )
+    public String buildEventTextFile;
 
     public boolean useColor() {
       return useColorEnum == UseColor.YES || (useColorEnum == UseColor.AUTO && isATty);

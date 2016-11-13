@@ -17,6 +17,7 @@ import com.google.common.base.Supplier;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
@@ -33,10 +34,8 @@ import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
 import java.util.ArrayList;
 import java.util.List;
-
 import javax.annotation.Nullable;
 
 /**
@@ -68,12 +67,6 @@ public class ConfigurationCollectionFunction implements SkyFunction {
         return null;
       }
 
-      for (BuildConfiguration config : result.getTargetConfigurations()) {
-        config.declareSkyframeDependencies(env);
-      }
-      if (env.valuesMissing()) {
-        return null;
-      }
       return new ConfigurationCollectionValue(result);
     } catch (InvalidConfigurationException e) {
       throw new ConfigurationCollectionFunctionException(e);
@@ -81,10 +74,12 @@ public class ConfigurationCollectionFunction implements SkyFunction {
   }
 
   /** Create the build configurations with the given options. */
-  private BuildConfigurationCollection getConfigurations(Environment env,
-      PackageProviderForConfigurations loadedPackageProvider, BuildOptions buildOptions,
+  private BuildConfigurationCollection getConfigurations(
+      Environment env,
+      PackageProviderForConfigurations loadedPackageProvider,
+      BuildOptions buildOptions,
       ImmutableSet<String> multiCpu)
-          throws InvalidConfigurationException {
+      throws InvalidConfigurationException, InterruptedException {
     // We cache all the related configurations for this target configuration in a cache that is
     // dropped at the end of this method call. We instead rely on the cache for entire collections
     // for caching the target and related configurations, and on a dedicated host configuration
@@ -121,15 +116,18 @@ public class ConfigurationCollectionFunction implements SkyFunction {
     return new BuildConfigurationCollection(targetConfigurations, hostConfiguration);
   }
 
-  /**
-   * Returns the host configuration, or null on missing Skyframe deps.
-   */
-  private BuildConfiguration getHostConfiguration(Environment env,
-      BuildConfiguration targetConfiguration) throws InvalidConfigurationException {
+  /** Returns the host configuration, or null on missing Skyframe deps. */
+  private BuildConfiguration getHostConfiguration(
+      Environment env, BuildConfiguration targetConfiguration)
+      throws InvalidConfigurationException, InterruptedException {
     if (targetConfiguration.useDynamicConfigurations()) {
       BuildOptions hostOptions = HostTransition.INSTANCE.apply(targetConfiguration.getOptions());
       SkyKey hostConfigKey =
-          BuildConfigurationValue.key(targetConfiguration.fragmentClasses(), hostOptions);
+          BuildConfigurationValue.key(
+              targetConfiguration.trimConfigurations()
+                  ? targetConfiguration.fragmentClasses()
+                  : ((ConfiguredRuleClassProvider) ruleClassProvider).getAllFragments(),
+              hostOptions);
       BuildConfigurationValue skyValHost = (BuildConfigurationValue)
           env.getValueOrThrow(hostConfigKey, InvalidConfigurationException.class);
 
@@ -155,7 +153,9 @@ public class ConfigurationCollectionFunction implements SkyFunction {
       Cache<String, BuildConfiguration> cache,
       EventHandler originalEventListener,
       PackageProviderForConfigurations loadedPackageProvider,
-      BuildOptions buildOptions, String cpuOverride) throws InvalidConfigurationException {
+      BuildOptions buildOptions,
+      String cpuOverride)
+      throws InvalidConfigurationException, InterruptedException {
     ErrorSensingEventHandler eventHandler = new ErrorSensingEventHandler(originalEventListener);
     if (cpuOverride != null) {
       // TODO(bazel-team): Options classes should be immutable. This is a bit of a hack.

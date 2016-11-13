@@ -20,6 +20,7 @@ import static org.junit.Assert.fail;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.CharStreams;
+import com.google.devtools.build.lib.bazel.repository.downloader.HttpDownloader;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Package;
@@ -36,17 +37,16 @@ import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.testutil.Scratch;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.SkyFunction;
-
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.Mockito;
-
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
 
 /**
  * Unit tests for complex function of SkylarkRepositoryContext.
@@ -89,12 +89,15 @@ public class SkylarkRepositoryContextTest {
             .externalPackageData()
             .createAndAddRepositoryRule(
                 packageBuilder, buildRuleClass(attributes), null, kwargs, ast);
+    AtomicReference<HttpDownloader> httpDownloader =
+        new AtomicReference<>(Mockito.mock(HttpDownloader.class));
     context =
         new SkylarkRepositoryContext(
             rule,
             outputDirectory,
             Mockito.mock(SkyFunction.Environment.class),
-            ImmutableMap.of("FOO", "BAR"));
+            ImmutableMap.of("FOO", "BAR"),
+            httpDownloader);
   }
 
   protected void setUpContexForRule(String name) throws Exception {
@@ -132,35 +135,46 @@ public class SkylarkRepositoryContextTest {
   @Test
   public void testFile() throws Exception {
     setUpContexForRule("test");
-    context.createFile(context.path("foobar"));
-    context.createFile(context.path("foo/bar"), "foobar");
-    context.createFile(context.path("bar/foo/bar"));
+    context.createFile(context.path("foobar"), "", true);
+    context.createFile(context.path("foo/bar"), "foobar", true);
+    context.createFile(context.path("bar/foo/bar"), "", true);
 
     testOutputFile(outputDirectory.getChild("foobar"), "");
     testOutputFile(outputDirectory.getRelative("foo/bar"), "foobar");
     testOutputFile(outputDirectory.getRelative("bar/foo/bar"), "");
 
     try {
-      context.createFile(context.path("/absolute"));
-      fail("Expected error on creating path outside of the output directory");
+      context.createFile(context.path("/absolute"), "", true);
+      fail("Expected error on creating path outside of the repository directory");
     } catch (RepositoryFunctionException ex) {
       assertThat(ex.getCause().getMessage())
-          .isEqualTo("Cannot write outside of the output directory for path /absolute");
+          .isEqualTo("Cannot write outside of the repository directory for path /absolute");
     }
     try {
-      context.createFile(context.path("../somepath"));
-      fail("Expected error on creating path outside of the output directory");
+      context.createFile(context.path("../somepath"), "", true);
+      fail("Expected error on creating path outside of the repository directory");
     } catch (RepositoryFunctionException ex) {
       assertThat(ex.getCause().getMessage())
-          .isEqualTo("Cannot write outside of the output directory for path /somepath");
+          .isEqualTo("Cannot write outside of the repository directory for path /somepath");
     }
     try {
-      context.createFile(context.path("foo/../../somepath"));
-      fail("Expected error on creating path outside of the output directory");
+      context.createFile(context.path("foo/../../somepath"), "", true);
+      fail("Expected error on creating path outside of the repository directory");
     } catch (RepositoryFunctionException ex) {
       assertThat(ex.getCause().getMessage())
-          .isEqualTo("Cannot write outside of the output directory for path /somepath");
+          .isEqualTo("Cannot write outside of the repository directory for path /somepath");
     }
+  }
+
+  @Test
+  public void testSymlink() throws Exception {
+    setUpContexForRule("test");
+    context.createFile(context.path("foo"), "foobar", true);
+
+    context.symlink(context.path("foo"), context.path("bar"));
+    testOutputFile(outputDirectory.getChild("bar"), "foobar");
+
+    assertThat(context.path("bar").realpath()).isEqualTo(context.path("foo"));
   }
 
   private void testOutputFile(Path path, String content) throws IOException {

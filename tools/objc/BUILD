@@ -67,6 +67,7 @@ sh_binary(
     name = "libtool",
     srcs = [":libtool.sh"],
     data = [
+        ":make_hashed_objlist.py",
         ":xcrunwrapper",
     ],
 )
@@ -137,6 +138,11 @@ objc_library(
     srcs = [
         "objc_dummy.mm",
     ],
+)
+
+filegroup(
+    name = "protobuf_compiler_wrapper",
+    srcs = ["protobuf_compiler_wrapper.sh"],
 )
 
 filegroup(

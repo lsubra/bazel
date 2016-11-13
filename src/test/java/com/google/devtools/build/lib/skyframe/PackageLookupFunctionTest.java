@@ -23,15 +23,17 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.testing.EqualsTester;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
+import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.bazel.rules.BazelRulesModule;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.events.NullEventHandler;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
+import com.google.devtools.build.lib.skyframe.ExternalFilesHelper.ExternalFileAction;
+import com.google.devtools.build.lib.skyframe.PackageLookupFunction.CrossRepositoryLabelViolationStrategy;
+import com.google.devtools.build.lib.skyframe.PackageLookupValue.BuildFileName;
 import com.google.devtools.build.lib.skyframe.PackageLookupValue.ErrorReason;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
-import com.google.devtools.build.lib.testutil.TestConstants;
-import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -43,43 +45,43 @@ import com.google.devtools.build.skyframe.SequentialBuildDriver;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
-
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
-
-/**
- * Tests for {@link PackageLookupFunction}.
- */
-@RunWith(JUnit4.class)
-public class PackageLookupFunctionTest extends FoundationTestCase {
+/** Tests for {@link PackageLookupFunction}. */
+public abstract class PackageLookupFunctionTest extends FoundationTestCase {
   private AtomicReference<ImmutableSet<PackageIdentifier>> deletedPackages;
   private MemoizingEvaluator evaluator;
   private SequentialBuildDriver driver;
   private RecordingDifferencer differencer;
+
+  protected abstract CrossRepositoryLabelViolationStrategy crossRepositoryLabelViolationStrategy();
 
   @Before
   public final void setUp() throws Exception {
     Path emptyPackagePath = rootDirectory.getRelative("somewhere/else");
     scratch.file("parentpackage/BUILD");
 
+    AnalysisMock analysisMock = AnalysisMock.get();
     AtomicReference<PathPackageLocator> pkgLocator = new AtomicReference<>(
         new PathPackageLocator(outputBase, ImmutableList.of(emptyPackagePath, rootDirectory)));
     deletedPackages = new AtomicReference<>(ImmutableSet.<PackageIdentifier>of());
-    BlazeDirectories directories = new BlazeDirectories(rootDirectory, outputBase, rootDirectory,
-        TestConstants.PRODUCT_NAME);
+    BlazeDirectories directories =
+        new BlazeDirectories(
+            rootDirectory, outputBase, rootDirectory, analysisMock.getProductName());
     ExternalFilesHelper externalFilesHelper = new ExternalFilesHelper(
-        pkgLocator, false, directories);
+        pkgLocator, ExternalFileAction.DEPEND_ON_EXTERNAL_PKG_FOR_EXTERNAL_REPO_PATHS, directories);
 
     Map<SkyFunctionName, SkyFunction> skyFunctions = new HashMap<>();
-    skyFunctions.put(SkyFunctions.PACKAGE_LOOKUP,
-        new PackageLookupFunction(deletedPackages));
+    skyFunctions.put(
+        SkyFunctions.PACKAGE_LOOKUP,
+        new PackageLookupFunction(deletedPackages, crossRepositoryLabelViolationStrategy()));
     skyFunctions.put(
         SkyFunctions.PACKAGE,
         new PackageFunction(null, null, null, null, null, null, null));
@@ -88,17 +90,18 @@ public class PackageLookupFunctionTest extends FoundationTestCase {
     skyFunctions.put(SkyFunctions.FILE, new FileFunction(pkgLocator));
     skyFunctions.put(SkyFunctions.BLACKLISTED_PACKAGE_PREFIXES,
         new BlacklistedPackagePrefixesFunction());
-    RuleClassProvider ruleClassProvider = TestRuleClassProvider.getRuleClassProvider();
-    skyFunctions.put(SkyFunctions.WORKSPACE_AST,
-        new WorkspaceASTFunction(TestRuleClassProvider.getRuleClassProvider()));
+    RuleClassProvider ruleClassProvider = analysisMock.createRuleClassProvider();
+    skyFunctions.put(SkyFunctions.WORKSPACE_AST, new WorkspaceASTFunction(ruleClassProvider));
     skyFunctions.put(
         SkyFunctions.WORKSPACE_FILE,
         new WorkspaceFileFunction(
             ruleClassProvider,
-            TestConstants.PACKAGE_FACTORY_FACTORY_FOR_TESTING.create(
-                ruleClassProvider,
-                new BazelRulesModule().getPackageEnvironmentExtension(),
-                scratch.getFileSystem()),
+            analysisMock
+                .getPackageFactoryForTesting()
+                .create(
+                    ruleClassProvider,
+                    new BazelRulesModule().getPackageEnvironmentExtension(),
+                    scratch.getFileSystem()),
             directories));
     skyFunctions.put(SkyFunctions.EXTERNAL_PACKAGE, new ExternalPackageFunction());
     differencer = new RecordingDifferencer();
@@ -205,6 +208,7 @@ public class PackageLookupFunctionTest extends FoundationTestCase {
     PackageLookupValue packageLookupValue = lookupPackage("parentpackage/everythinggood");
     assertTrue(packageLookupValue.packageExists());
     assertEquals(rootDirectory, packageLookupValue.getRoot());
+    assertEquals(BuildFileName.BUILD, packageLookupValue.getBuildFileName());
   }
 
   @Test
@@ -213,6 +217,7 @@ public class PackageLookupFunctionTest extends FoundationTestCase {
     PackageLookupValue packageLookupValue = lookupPackage("");
     assertTrue(packageLookupValue.packageExists());
     assertEquals(rootDirectory, packageLookupValue.getRoot());
+    assertEquals(BuildFileName.BUILD, packageLookupValue.getBuildFileName());
   }
 
   @Test
@@ -223,7 +228,7 @@ public class PackageLookupFunctionTest extends FoundationTestCase {
     assertTrue(packageLookupValue.packageExists());
     assertEquals(rootDirectory, packageLookupValue.getRoot());
   }
-  
+
   @Test
   public void testPackageLookupValueHashCodeAndEqualsContract() throws Exception {
     Path root1 = rootDirectory.getRelative("root1");
@@ -232,16 +237,54 @@ public class PackageLookupFunctionTest extends FoundationTestCase {
     // PackageLookupValue are supposed to have reference equality semantics, and some are supposed
     // to have logical equality semantics.
     new EqualsTester()
-        .addEqualityGroup(PackageLookupValue.success(root1), PackageLookupValue.success(root1))
-        .addEqualityGroup(PackageLookupValue.success(root2), PackageLookupValue.success(root2))
+        .addEqualityGroup(
+            PackageLookupValue.success(root1, BuildFileName.BUILD),
+            PackageLookupValue.success(root1, BuildFileName.BUILD))
+        .addEqualityGroup(
+            PackageLookupValue.success(root2, BuildFileName.BUILD),
+            PackageLookupValue.success(root2, BuildFileName.BUILD))
         .addEqualityGroup(
             PackageLookupValue.NO_BUILD_FILE_VALUE, PackageLookupValue.NO_BUILD_FILE_VALUE)
         .addEqualityGroup(
             PackageLookupValue.DELETED_PACKAGE_VALUE, PackageLookupValue.DELETED_PACKAGE_VALUE)
-        .addEqualityGroup(PackageLookupValue.invalidPackageName("nope1"),
+        .addEqualityGroup(
+            PackageLookupValue.invalidPackageName("nope1"),
             PackageLookupValue.invalidPackageName("nope1"))
-        .addEqualityGroup(PackageLookupValue.invalidPackageName("nope2"),
-             PackageLookupValue.invalidPackageName("nope2"))
+        .addEqualityGroup(
+            PackageLookupValue.invalidPackageName("nope2"),
+            PackageLookupValue.invalidPackageName("nope2"))
         .testEquals();
+  }
+
+  /**
+   * Runs all tests in the base {@link PackageLookupFunctionTest} class with the
+   * {@link CrossRepositoryLabelViolationStrategy#IGNORE} enum set, and also additional tests
+   * specific to that setting.
+   */
+  @RunWith(JUnit4.class)
+  public static class IgnoreLabelViolationsTest
+      extends PackageLookupFunctionTest {
+    @Override
+    protected CrossRepositoryLabelViolationStrategy crossRepositoryLabelViolationStrategy() {
+      return CrossRepositoryLabelViolationStrategy.IGNORE;
+    }
+
+    // Add any ignore-specific tests here.
+  }
+
+  /**
+   * Runs all tests in the base {@link PackageLookupFunctionTest} class with the
+   * {@link CrossRepositoryLabelViolationStrategy#ERROR} enum set, and also additional tests
+   * specific to that setting.
+   */
+  @RunWith(JUnit4.class)
+  public static class ErrorLabelViolationsTest
+      extends PackageLookupFunctionTest {
+    @Override
+    protected CrossRepositoryLabelViolationStrategy crossRepositoryLabelViolationStrategy() {
+      return CrossRepositoryLabelViolationStrategy.ERROR;
+    }
+
+    // Add any error-specific tests here.
   }
 }

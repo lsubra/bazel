@@ -21,6 +21,7 @@ import static com.google.devtools.build.lib.rules.objc.ObjcProvider.Flag.USES_SW
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.IMPORTED_LIBRARY;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.LIBRARY;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.MERGE_ZIP;
+import static com.google.devtools.build.lib.rules.objc.ObjcProvider.MULTI_ARCH_LINKED_BINARIES;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.NESTED_BUNDLE;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.ROOT_MERGE_ZIP;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.STORYBOARD;
@@ -31,6 +32,7 @@ import static com.google.devtools.build.lib.rules.objc.ObjcRuleClasses.BundlingR
 import static com.google.devtools.build.lib.rules.objc.ObjcRuleClasses.BundlingRule.INFOPLIST_ATTR;
 
 import com.google.common.base.Optional;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -45,10 +47,10 @@ import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
 import com.google.devtools.build.lib.rules.apple.DottedVersion;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 
 /**
  * Contains information regarding the creation of an iOS bundle.
@@ -77,9 +79,16 @@ final class Bundling {
     private DottedVersion minimumOsVersion;
     private ImmutableSet<TargetDeviceFamily> families;
     private String artifactPrefix;
+    @Nullable private String executableName;
 
     public Builder setName(String name) {
       this.name = name;
+      return this;
+    }
+
+    /** Sets the name of the bundle's executable. */
+    public Builder setExecutableName(String executableName) {
+      this.executableName = executableName;
       return this;
     }
 
@@ -221,6 +230,17 @@ final class Bundling {
       return mergeZipBuilder.build();
     }
 
+    private NestedSet<Artifact> rootMergeZips() {
+      NestedSetBuilder<Artifact> rootMergeZipsBuilder =
+          NestedSetBuilder.<Artifact>stableOrder().addTransitive(objcProvider.get(ROOT_MERGE_ZIP));
+
+      if (objcProvider.is(USES_SWIFT)) {
+        rootMergeZipsBuilder.add(intermediateArtifacts.swiftSupportZip());
+      }
+
+      return rootMergeZipsBuilder.build();
+    }
+
     private NestedSet<Artifact> bundleInfoplistInputs() {
       if (objcProvider.hasAssetCatalogs()) {
         infoplistInputs.add(intermediateArtifacts.actoolPartialInfoplist());
@@ -239,13 +259,13 @@ final class Bundling {
     }
 
     private Optional<Artifact> combinedArchitectureBinary() {
-      Optional<Artifact> combinedArchitectureBinary = Optional.absent();
-      if (!Iterables.isEmpty(objcProvider.get(LIBRARY))
+      if (!Iterables.isEmpty(objcProvider.get(MULTI_ARCH_LINKED_BINARIES))) {
+        return Optional.of(Iterables.getOnlyElement(objcProvider.get(MULTI_ARCH_LINKED_BINARIES)));
+      } else if (!Iterables.isEmpty(objcProvider.get(LIBRARY))
           || !Iterables.isEmpty(objcProvider.get(IMPORTED_LIBRARY))) {
-        combinedArchitectureBinary =
-            Optional.of(intermediateArtifacts.combinedArchitectureBinary());
+        return Optional.of(intermediateArtifacts.combinedArchitectureBinary());
       }
-      return combinedArchitectureBinary;
+      return Optional.absent();
     }
 
     private Optional<Artifact> actoolzipOutput() {
@@ -328,9 +348,7 @@ final class Bundling {
       NestedSet<BundleableFile> binaryStringsFiles = binaryStringsFiles();
       NestedSet<BundleableFile> dynamicFrameworks = dynamicFrameworkFiles();
       NestedSet<Artifact> mergeZips = mergeZips(actoolzipOutput);
-      NestedSet<Artifact> rootMergeZips =
-          NestedSetBuilder.<Artifact>stableOrder()
-              .addTransitive(objcProvider.get(ROOT_MERGE_ZIP)).build();
+      NestedSet<Artifact> rootMergeZips = rootMergeZips();
 
       bundleFilesBuilder
           .addAll(binaryStringsFiles)
@@ -350,6 +368,7 @@ final class Bundling {
 
       return new Bundling(
           name,
+          executableName,
           bundleDirFormat,
           combinedArchitectureBinary,
           bundleFiles,
@@ -378,6 +397,7 @@ final class Bundling {
   }
 
   private final String name;
+  @Nullable private final String executableName;
   private final String architecture;
   private final String bundleDirFormat;
   private final Optional<Artifact> combinedArchitectureBinary;
@@ -399,6 +419,7 @@ final class Bundling {
 
   private Bundling(
       String name,
+      String executableName,
       String bundleDirFormat,
       Optional<Artifact> combinedArchitectureBinary,
       ImmutableList<BundleableFile> bundleFiles,
@@ -419,6 +440,7 @@ final class Bundling {
       String artifactPrefix) {
     this.nestedBundlings = Preconditions.checkNotNull(nestedBundlings);
     this.name = Preconditions.checkNotNull(name);
+    this.executableName = executableName;
     this.bundleDirFormat = Preconditions.checkNotNull(bundleDirFormat);
     this.combinedArchitectureBinary = Preconditions.checkNotNull(combinedArchitectureBinary);
     this.bundleFiles = Preconditions.checkNotNull(bundleFiles);
@@ -453,6 +475,11 @@ final class Bundling {
    */
   public String getName() {
     return name;
+  }
+  
+  /** The name of the bundle's executable, or null if the bundle has no executable. */
+  @Nullable public String getExecutableName() {
+    return executableName;
   }
 
   /**
@@ -562,7 +589,7 @@ final class Bundling {
    */
   public Map<String, String> variableSubstitutions() {
     return ImmutableMap.of(
-        "EXECUTABLE_NAME", name,
+        "EXECUTABLE_NAME", Strings.nullToEmpty(executableName),
         "BUNDLE_NAME", new PathFragment(getBundleDir()).getBaseName(),
         "PRODUCT_NAME", name);
   }

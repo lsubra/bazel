@@ -49,6 +49,22 @@ public class PathFragmentTest {
   }
 
   @Test
+  public void testCreateInternsPathFragments() {
+    String[] firstSegments = new String[] {"hello", "world"};
+    PathFragment first = PathFragment.create(
+        /*driveLetter=*/ '\0', /*isAbsolute=*/ false, firstSegments);
+
+    String[] secondSegments = new String[] {new String("hello"), new String("world")};
+    PathFragment second = PathFragment.create(
+        /*driveLetter=*/ '\0', /*isAbsolute=*/ false, secondSegments);
+
+    assertThat(first.segmentCount()).isEqualTo(second.segmentCount());
+    for (int i = 0; i < first.segmentCount(); i++) {
+      assertThat(first.getSegment(i)).isSameAs(second.getSegment(i));
+    }
+  }
+
+  @Test
   public void testEqualsAndHashCode() {
     InMemoryFileSystem filesystem = new InMemoryFileSystem();
 
@@ -225,7 +241,7 @@ public class PathFragmentTest {
     assertEquals(fooBarAbs,
                  new PathFragment("/foo/bar/..").getParentDirectory());
   }
-  
+
   @Test
   public void testSegmentsCount() {
     assertEquals(2, new PathFragment("foo/bar").segmentCount());
@@ -263,6 +279,20 @@ public class PathFragmentTest {
     assertEquals("foo", new PathFragment("/foo").getBaseName());
     assertThat(new PathFragment("/").getBaseName()).isEmpty();
     assertThat(new PathFragment("").getBaseName()).isEmpty();
+  }
+
+  @Test
+  public void testFileExtension() throws Exception {
+    assertThat(new PathFragment("foo.bar").getFileExtension()).isEqualTo("bar");
+    assertThat(new PathFragment("foo.barr").getFileExtension()).isEqualTo("barr");
+    assertThat(new PathFragment("foo.b").getFileExtension()).isEqualTo("b");
+    assertThat(new PathFragment("foo.").getFileExtension()).isEmpty();
+    assertThat(new PathFragment("foo").getFileExtension()).isEmpty();
+    assertThat(new PathFragment(".").getFileExtension()).isEmpty();
+    assertThat(new PathFragment("").getFileExtension()).isEmpty();
+    assertThat(new PathFragment("foo/bar.baz").getFileExtension()).isEqualTo("baz");
+    assertThat(new PathFragment("foo.bar.baz").getFileExtension()).isEqualTo("baz");
+    assertThat(new PathFragment("foo.bar/baz").getFileExtension()).isEmpty();
   }
 
   private static void assertPath(String expected, PathFragment actual) {
@@ -505,7 +535,7 @@ public class PathFragmentTest {
     assertEquals(".", PathFragment.EMPTY_FRAGMENT.getSafePathString());
     assertEquals("abc/def", new PathFragment("abc/def").getSafePathString());
   }
-  
+
   @Test
   public void testNormalize() {
     assertEquals(new PathFragment("/a/b"), new PathFragment("/a/b").normalize());

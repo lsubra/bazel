@@ -16,7 +16,6 @@ package com.google.devtools.build.docgen.skylark;
 import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
 import com.google.devtools.build.lib.syntax.BaseFunction;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -53,7 +52,7 @@ public final class SkylarkBuiltinMethodDoc extends SkylarkMethodDoc {
   }
 
   @Override
-  public String getDocumentation() {
+  protected String getEntityDocumentation() {
     return annotation.doc();
   }
 
@@ -81,10 +80,7 @@ public final class SkylarkBuiltinMethodDoc extends SkylarkMethodDoc {
   }
 
   private void processParams() {
-    processParams(adjustedMandatoryPositionals(annotation));
-    processParams(annotation.optionalPositionals());
-    processParams(annotation.optionalNamedOnly());
-    processParams(annotation.mandatoryNamedOnly());
+    processParams(adjustedParameters(annotation));
     if (!annotation.extraPositionals().name().isEmpty()) {
       this.params.add(new SkylarkParamDoc(this, annotation.extraPositionals()));
     }

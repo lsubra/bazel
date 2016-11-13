@@ -1,5 +1,5 @@
 ---
-layout: community
+layout: contribute
 title: Roadmap
 ---
 
@@ -98,7 +98,7 @@ be refined if appropriate.
       <td>P0. <a href="https://github.com/bazelbuild/bazel/tree/master/src/test/java/com/google/devtools">Significantly increase test coverage</a></td>
     </tr>
     <tr><td>P0. Support for fetching <a href="http://bazel.io/docs/external.html">remote</a> <a href="http://bazel.io/docs/be/functions.html#load">Skylark rules</a></td></tr>
-    <tr><td>P2. <a href="http://bazel.io/docs/be/go.html">Go language support (build and tests)</a></td></tr>
+    <tr><td>P2. <a href="https://github.com/bazelbuild/rules_go">Go language support (build and tests)</a></td></tr>
     <tr><td>P2. <a href="https://github.com/bazelbuild/bazel/releases/latest">Debian packages for Bazel</a></td></tr>
     <tr><td>P2. <a href="http://braumeister.org/formula/bazel">OS X homebrew recipe for distributing Bazel</a></td></tr>
     <tr>
@@ -110,32 +110,33 @@ be refined if appropriate.
       <td>P0. <a href="http://bazel.io/docs/windows.html">Bazel can bootstrap itself on Windows without requiring admin privileges</a></td></tr>
     </tr>
     <tr><td>P1. <a href="http://bazel.io/blog/2016/06/10/ide-support.html">Interface for IDE support</a></td></tr>
-    <tr><td>P1. IDE support for <a href="http://tulsi.bazel.io">X-code (stable)</a> and <a href="https://github.com/bazelbuild/e4b">Eclipse (experimental)</a></td></tr>
+    <tr><td>P1. IDE support for <a href="http://tulsi.bazel.io">Xcode (stable)</a> and <a href="https://github.com/bazelbuild/e4b">Eclipse (experimental)</a></td></tr>
     <tr><td>P1. <a href="https://docs.google.com/document/d/1jKbNXOVp2T1zJD_iRnVr8k5D0xZKgO8blMVDlXOksJg">Custom remote repositories using Skylark</a></td></tr>
     <tr><td>P2. <a href="https://github.com/bazelbuild/bazel/commit/79adf59e2973754c8c0415fcab45cd58c7c34697">Prototype for distributed caching of build artifact</a></td></tr>
     <tr>
       <td rowspan="2"><b>0.4</b></td>
-      <td rowspan="2"><b>2016&#8209;08</b></td>
-      <td>P0. Persistent Java compiler is enabled</td>
+      <td rowspan="2"><b>2016&#8209;10</b></td>
+      <td>P0.<a
+      href="https://github.com/bazelbuild/bazel/commit/490f250b27183a886cf70a5fe9e99d9428141b34"> Persistent Java compiler is enabled</a></td>
     </tr>
     <tr><td>P2. Sandboxing of action for OS X</td></tr>
     <tr>
       <td rowspan="4"><b>0.5</b></td>
-      <td rowspan="4"><b>2016&#8209;10</b></td>
+      <td rowspan="4"><b>2016&#8209;11</b></td>
       <td>P0. Support for testing Android apps</td>
     </tr>
     <tr><td>P0. Bazel supports building Java, C++ and Python on Windows</td></tr>
-    <tr><td>P1. Distributed execution of actions</td></tr>
+    <tr><td>P1. Bazel supports distributed execution of actions through a stable API</td></tr>
     <tr><td>P2. Support for Swift language</td></tr>
     <tr>
       <td rowspan="2"><b>0.6</b></td>
-      <td rowspan="2"><b>2016&#8209;11</b></td>
+      <td rowspan="2"><b>2017 Q1</b></td>
       <td>P0. Searchable "hub" of Skylark rules</td>
     </tr>
     <tr><td>P2. Reference ("pull") remote docker images as an input to the build process</td></tr>
     <tr>
       <td rowspan="3"><b>0.7</b></td>
-      <td rowspan="3"><b>2017 Q1</b></td>
+      <td rowspan="3"><b>2017 Q2</b></td>
       <td>P0. Full Windows support for Android: Android feature set is identical for Windows and Linux/OS X</tr>
     </tr>
     <tr><td>P1. Android Studio interoperability</td></tr>

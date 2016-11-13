@@ -28,9 +28,25 @@ def create_android_sdk_rules(
     api_level: int, the API level from which to get android.jar et al.
   """
 
+  # This filegroup is used to pass the contents of the SDK to the Android
+  # integration tests. We need to glob because not all of these folders ship
+  # with the Android SDK, some need to be installed through the SDK Manager.
+  # Since android_sdk_repository function generates BUILD files, we do not want
+  # to include those because the integration test would fail when it tries to
+  # regenerate those BUILD files because the Bazel Sandbox does not allow
+  # overwriting existing files.
   native.filegroup(
       name = "files",
-      srcs = ["."],
+      srcs = native.glob([
+          "add-ons",
+          "build-tools",
+          "extras",
+          "platforms",
+          "platform-tools",
+          "sources",
+          "system-images",
+          "tools",
+      ]),
   )
 
   native.java_import(
@@ -44,6 +60,18 @@ def create_android_sdk_rules(
       manifest = "extras/android/support/v7/appcompat/AndroidManifest.xml",
       resource_files = native.glob(["extras/android/support/v7/appcompat/res/**"]),
       deps = [":appcompat_v7_import"]
+  )
+
+  native.java_import(
+      name = "customtabs_import",
+      jars = ["extras/android/support/customtabs/libs/android-support-customtabs.jar"],
+  )
+
+  native.android_library(
+      name = "customtabs",
+      custom_package = "android.support.customtabs",
+      manifest = "extras/android/support/customtabs/AndroidManifest.xml",
+      deps = [":customtabs_import"]
   )
 
   native.java_import(
@@ -160,6 +188,7 @@ def create_android_sdk_rules(
       annotations_jar = "tools/support/annotations.jar",
       main_dex_classes = "build-tools/%s/mainDexClasses.rules" % build_tools_directory,
       apkbuilder = "@bazel_tools//third_party/java/apkbuilder:embedded_apkbuilder",
+      apksigner = "@bazel_tools//third_party/java/apksig:embedded_apksigner",
       zipalign = ":zipalign_binary",
       jack = ":fail",
       jill = ":fail",
@@ -186,27 +215,30 @@ def create_android_sdk_rules(
       ])
   )
 
-  [native.genrule(
-       name = tool + "_runner",
-       outs = [tool + "_runner.sh"],
-       srcs = [],
-       cmd  = "\n".join(["cat > $@ << 'EOF'",
-           "#!/bin/bash -eu",
-           # The tools under build-tools/VERSION require the libraries under build-tools/VERSION/lib,
-           # so we can't simply depend on them as a file like we do with aapt.
-           "SDK=$${0}.runfiles/%s" % name,
-           "exec $${SDK}/build-tools/%s/%s $$*" % (build_tools_directory, tool),
-           "EOF\n"]),
-  ) for tool in ["aapt", "aidl", "zipalign"]]
+  for tool in ["aapt", "aidl", "zipalign"]:
+    native.genrule(
+        name = tool + "_runner",
+        outs = [tool + "_runner.sh"],
+        srcs = [],
+        cmd  = "\n".join([
+            "cat > $@ << 'EOF'",
+            "#!/bin/bash",
+            "set -eu",
+            # The tools under build-tools/VERSION require the libraries under build-tools/VERSION/lib,
+            # so we can't simply depend on them as a file like we do with aapt.
+            "SDK=$${0}.runfiles/%s" % name,
+            "exec $${SDK}/build-tools/%s/%s $$*" % (build_tools_directory, tool),
+            "EOF\n"]),
+    )
 
-  [native.sh_binary(
-      name = tool + "_binary",
-      srcs = [tool + "_runner.sh"],
-      data = [
-          ":build_tools_libs",
-          "build-tools/%s/%s" % (build_tools_directory, tool)
-      ],
-  ) for tool in ["aapt", "aidl", "zipalign"]]
+    native.sh_binary(
+        name = tool + "_binary",
+        srcs = [tool + "_runner.sh"],
+        data = [
+            ":build_tools_libs",
+            "build-tools/%s/%s" % (build_tools_directory, tool)
+        ],
+    )
 
   native.sh_binary(
       name = "fail",

@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.syntax;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
@@ -26,12 +27,11 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkSignature;
-import com.google.devtools.build.lib.syntax.ClassObject.SkylarkClassObject;
 import com.google.devtools.build.lib.syntax.SkylarkList.MutableList;
 import com.google.devtools.build.lib.syntax.SkylarkList.Tuple;
 import com.google.devtools.build.lib.syntax.Type.ConversionException;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
@@ -55,7 +55,7 @@ public class MethodLibrary {
   // Convert string index in the same way Python does.
   // If index is negative, starts from the end.
   // If index is outside bounds, it is restricted to the valid range.
-  private static int clampIndex(int index, int length) {
+  public static int clampIndex(int index, int length) {
     if (index < 0) {
       index += length;
     }
@@ -83,16 +83,26 @@ public class MethodLibrary {
   }
 
   private static int getListIndex(int index, int listSize, Location loc)
-      throws ConversionException, EvalException {
+      throws EvalException {
     // Get the nth element in the list
-    if (index < 0) {
-      index += listSize;
+    int actualIndex = index;
+    if (actualIndex < 0) {
+      actualIndex += listSize;
     }
-    if (index < 0 || index >= listSize) {
+    if (actualIndex < 0 || actualIndex >= listSize) {
       throw new EvalException(loc, "List index out of range (index is "
           + index + ", but list has " + listSize + " elements)");
     }
-    return index;
+    return actualIndex;
+  }
+
+  public static int getListIndex(Object index, int listSize, Location loc)
+      throws EvalException {
+    if (!(index instanceof Integer)) {
+      throw new EvalException(loc, "List indices must be integers, not "
+          + EvalUtils.getDataTypeName(index));
+    }
+    return getListIndex(((Integer) index).intValue(), listSize, loc);
   }
 
   // supported string methods
@@ -101,7 +111,7 @@ public class MethodLibrary {
       doc = "Returns a string in which the string elements of the argument have been "
           + "joined by this string as a separator. Example:<br>"
           + "<pre class=\"language-python\">\"|\".join([\"a\", \"b\", \"c\"]) == \"a|b|c\"</pre>",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string, a separator."),
         @Param(name = "elements", type = SkylarkList.class, doc = "The objects to join.")})
   private static final BuiltinFunction join = new BuiltinFunction("join") {
@@ -112,7 +122,7 @@ public class MethodLibrary {
 
   @SkylarkSignature(name = "lower", objectType = StringModule.class, returnType = String.class,
       doc = "Returns the lower case version of this string.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string, to convert to lower case.")})
   private static final BuiltinFunction lower = new BuiltinFunction("lower") {
     public String invoke(String self) {
@@ -122,7 +132,7 @@ public class MethodLibrary {
 
   @SkylarkSignature(name = "upper", objectType = StringModule.class, returnType = String.class,
       doc = "Returns the upper case version of this string.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string, to convert to upper case.")})
   private static final BuiltinFunction upper = new BuiltinFunction("upper") {
     public String invoke(String self) {
@@ -159,11 +169,9 @@ public class MethodLibrary {
             + "are removed."
             + "<pre class=\"language-python\">"
             + "\"abcba\".lstrip(\"ba\") == \"cba\""
-            + "</pre",
-    mandatoryPositionals = {
+            + "</pre>",
+    parameters = {
       @Param(name = "self", type = String.class, doc = "This string"),
-    },
-    optionalPositionals = {
       @Param(
         name = "chars",
         type = String.class,
@@ -188,11 +196,9 @@ public class MethodLibrary {
             + "are removed."
             + "<pre class=\"language-python\">"
             + "\"abcba\".rstrip(\"ba\") == \"abc\""
-            + "</pre",
-    mandatoryPositionals = {
+            + "</pre>",
+    parameters = {
       @Param(name = "self", type = String.class, doc = "This string"),
-    },
-    optionalPositionals = {
       @Param(
         name = "chars",
         type = String.class,
@@ -217,11 +223,9 @@ public class MethodLibrary {
             + "are removed."
             + "<pre class=\"language-python\">"
             + "\"abcba\".strip(\"ba\") == \"abc\""
-            + "</pre",
-    mandatoryPositionals = {
+            + "</pre>",
+    parameters = {
       @Param(name = "self", type = String.class, doc = "This string"),
-    },
-    optionalPositionals = {
       @Param(
         name = "chars",
         type = String.class,
@@ -237,91 +241,126 @@ public class MethodLibrary {
         }
       };
 
-  @SkylarkSignature(name = "replace", objectType = StringModule.class, returnType = String.class,
-      doc = "Returns a copy of the string in which the occurrences "
-          + "of <code>old</code> have been replaced with <code>new</code>, optionally restricting "
-          + "the number of replacements to <code>maxsplit</code>.",
-      mandatoryPositionals = {
-        @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "old", type = String.class, doc = "The string to be replaced."),
-        @Param(name = "new", type = String.class, doc = "The string to replace with.")},
-      optionalPositionals = {
-        @Param(name = "maxsplit", type = Integer.class, noneable = true, defaultValue = "None",
-            doc = "The maximum number of replacements.")},
-      useLocation = true)
-  private static final BuiltinFunction replace = new BuiltinFunction("replace") {
-    public String invoke(String self, String oldString, String newString, Object maxSplitO,
-        Location loc) throws EvalException, ConversionException {
-      StringBuffer sb = new StringBuffer();
-      Integer maxSplit = Type.INTEGER.convertOptional(
-          maxSplitO, "'maxsplit' argument of 'replace'", /*label*/null, Integer.MAX_VALUE);
-      try {
-        Matcher m = Pattern.compile(oldString, Pattern.LITERAL).matcher(self);
-        for (int i = 0; i < maxSplit && m.find(); i++) {
-          m.appendReplacement(sb, Matcher.quoteReplacement(newString));
+  @SkylarkSignature(
+    name = "replace",
+    objectType = StringModule.class,
+    returnType = String.class,
+    doc =
+        "Returns a copy of the string in which the occurrences "
+            + "of <code>old</code> have been replaced with <code>new</code>, optionally "
+            + "restricting the number of replacements to <code>maxsplit</code>.",
+    parameters = {
+      @Param(name = "self", type = String.class, doc = "This string."),
+      @Param(name = "old", type = String.class, doc = "The string to be replaced."),
+      @Param(name = "new", type = String.class, doc = "The string to replace with."),
+      @Param(
+        name = "maxsplit",
+        type = Integer.class,
+        noneable = true,
+        defaultValue = "None",
+        doc = "The maximum number of replacements."
+      )
+    },
+    useLocation = true
+  )
+  private static final BuiltinFunction replace =
+      new BuiltinFunction("replace") {
+        public String invoke(
+            String self, String oldString, String newString, Object maxSplitO, Location loc)
+            throws EvalException {
+          StringBuffer sb = new StringBuffer();
+          Integer maxSplit =
+              Type.INTEGER.convertOptional(
+                  maxSplitO, "'maxsplit' argument of 'replace'", /*label*/ null, Integer.MAX_VALUE);
+          try {
+            Matcher m = Pattern.compile(oldString, Pattern.LITERAL).matcher(self);
+            for (int i = 0; i < maxSplit && m.find(); i++) {
+              m.appendReplacement(sb, Matcher.quoteReplacement(newString));
+            }
+            m.appendTail(sb);
+          } catch (IllegalStateException e) {
+            throw new EvalException(loc, e.getMessage() + " in call to replace");
+          }
+          return sb.toString();
         }
-        m.appendTail(sb);
-      } catch (IllegalStateException e) {
-        throw new EvalException(loc, e.getMessage() + " in call to replace");
-      }
-      return sb.toString();
-    }
-  };
+      };
 
-  @SkylarkSignature(name = "split", objectType = StringModule.class,
-      returnType = MutableList.class,
-      doc = "Returns a list of all the words in the string, using <code>sep</code>  "
-          + "as the separator, optionally limiting the number of splits to <code>maxsplit</code>.",
-      mandatoryPositionals = {
-        @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sep", type = String.class, doc = "The string to split on.")},
-      optionalPositionals = {
-        @Param(name = "maxsplit", type = Integer.class, noneable = true, defaultValue = "None",
-            doc = "The maximum number of splits.")},
-      useEnvironment = true,
-      useLocation = true)
-  private static final BuiltinFunction split = new BuiltinFunction("split") {
-    public MutableList<String> invoke(String self, String sep, Object maxSplitO, Location loc,
-        Environment env) throws ConversionException, EvalException {
-      int maxSplit = Type.INTEGER.convertOptional(
-          maxSplitO, "'split' argument of 'split'", /*label*/null, -2);
-      // + 1 because the last result is the remainder, and default of -2 so that after +1 it's -1
-      String[] ss = Pattern.compile(sep, Pattern.LITERAL).split(self, maxSplit + 1);
-      return MutableList.of(env, ss);
-    }
-  };
+  @SkylarkSignature(
+    name = "split",
+    objectType = StringModule.class,
+    returnType = MutableList.class,
+    doc =
+        "Returns a list of all the words in the string, using <code>sep</code> as the separator, "
+            + "optionally limiting the number of splits to <code>maxsplit</code>.",
+    parameters = {
+      @Param(name = "self", type = String.class, doc = "This string."),
+      @Param(name = "sep", type = String.class, doc = "The string to split on."),
+      @Param(
+        name = "maxsplit",
+        type = Integer.class,
+        noneable = true,
+        defaultValue = "None",
+        doc = "The maximum number of splits."
+      )
+    },
+    useEnvironment = true,
+    useLocation = true
+  )
+  private static final BuiltinFunction split =
+      new BuiltinFunction("split") {
+        public MutableList<String> invoke(
+            String self, String sep, Object maxSplitO, Location loc, Environment env)
+            throws EvalException {
+          int maxSplit =
+              Type.INTEGER.convertOptional(
+                  maxSplitO, "'split' argument of 'split'", /*label*/ null, -2);
+          // + 1 because the last result is the remainder. The default is -2 so that after +1,
+          // it becomes -1.
+          String[] ss = Pattern.compile(sep, Pattern.LITERAL).split(self, maxSplit + 1);
+          return MutableList.of(env, ss);
+        }
+      };
 
-  @SkylarkSignature(name = "rsplit", objectType = StringModule.class,
-      returnType = MutableList.class,
-      doc = "Returns a list of all the words in the string, using <code>sep</code>  "
-          + "as the separator, optionally limiting the number of splits to <code>maxsplit</code>. "
-          + "Except for splitting from the right, this method behaves like split().",
-      mandatoryPositionals = {
-        @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sep", type = String.class, doc = "The string to split on.")},
-      optionalPositionals = {
-        @Param(name = "maxsplit", type = Integer.class, noneable = true,
-          defaultValue = "None", doc = "The maximum number of splits.")},
-      useEnvironment = true,
-      useLocation = true)
-  private static final BuiltinFunction rsplit = new BuiltinFunction("rsplit") {
-    @SuppressWarnings("unused")
-    public MutableList<String> invoke(
-        String self, String sep, Object maxSplitO, Location loc, Environment env)
-        throws ConversionException, EvalException {
-      int maxSplit =
-          Type.INTEGER.convertOptional(maxSplitO, "'split' argument of 'split'", null, -1);
-      try {
-        return stringRSplit(self, sep, maxSplit, env);
-      } catch (IllegalArgumentException ex) {
-        throw new EvalException(loc, ex);
-      }
-    }
-  };
+  @SkylarkSignature(
+    name = "rsplit",
+    objectType = StringModule.class,
+    returnType = MutableList.class,
+    doc =
+        "Returns a list of all the words in the string, using <code>sep</code> as the separator, "
+            + "optionally limiting the number of splits to <code>maxsplit</code>. "
+            + "Except for splitting from the right, this method behaves like split().",
+    parameters = {
+      @Param(name = "self", type = String.class, doc = "This string."),
+      @Param(name = "sep", type = String.class, doc = "The string to split on."),
+      @Param(
+        name = "maxsplit",
+        type = Integer.class,
+        noneable = true,
+        defaultValue = "None",
+        doc = "The maximum number of splits."
+      )
+    },
+    useEnvironment = true,
+    useLocation = true
+  )
+  private static final BuiltinFunction rsplit =
+      new BuiltinFunction("rsplit") {
+        @SuppressWarnings("unused")
+        public MutableList<String> invoke(
+            String self, String sep, Object maxSplitO, Location loc, Environment env)
+            throws EvalException {
+          int maxSplit =
+              Type.INTEGER.convertOptional(maxSplitO, "'split' argument of 'split'", null, -1);
+          try {
+            return stringRSplit(self, sep, maxSplit, env);
+          } catch (IllegalArgumentException ex) {
+            throw new EvalException(loc, ex);
+          }
+        }
+      };
 
   /**
-   * Splits the given string into a list of words, using {@code separator} as a
-   * delimiter.
+   * Splits the given string into a list of words, using {@code separator} as a delimiter.
    *
    * <p>At most {@code maxSplits} will be performed, going from right to left.
    *
@@ -332,8 +371,7 @@ public class MethodLibrary {
    * @throws IllegalArgumentException
    */
   private static MutableList<String> stringRSplit(
-      String input, String separator, int maxSplits, Environment env)
-      throws IllegalArgumentException {
+      String input, String separator, int maxSplits, Environment env) {
     if (separator.isEmpty()) {
       throw new IllegalArgumentException("Empty separator");
     }
@@ -372,9 +410,8 @@ public class MethodLibrary {
       doc = "Splits the input string at the first occurrence of the separator "
           + "<code>sep</code> and returns the resulting partition as a three-element "
           + "list of the form [substring_before, separator, substring_after].",
-      mandatoryPositionals = {
-        @Param(name = "self", type = String.class, doc = "This string.")},
-      optionalPositionals = {
+      parameters = {
+        @Param(name = "self", type = String.class, doc = "This string."),
         @Param(name = "sep", type = String.class,
           defaultValue = "' '", doc = "The string to split on, default is space (\" \").")},
       useEnvironment = true,
@@ -392,9 +429,8 @@ public class MethodLibrary {
       doc = "Splits the input string at the last occurrence of the separator "
           + "<code>sep</code> and returns the resulting partition as a three-element "
           + "list of the form [substring_before, separator, substring_after].",
-      mandatoryPositionals = {
-        @Param(name = "self", type = String.class, doc = "This string.")},
-      optionalPositionals = {
+      parameters = {
+        @Param(name = "self", type = String.class, doc = "This string."),
         @Param(name = "sep", type = String.class,
           defaultValue = "' '", doc = "The string to split on, default is space (\" \").")},
       useEnvironment = true,
@@ -430,26 +466,23 @@ public class MethodLibrary {
   }
 
   /**
-   * Splits the input string at the {first|last} occurrence of the given separator
-   * and returns the resulting partition as a three-tuple of Strings, contained
-   * in a {@code MutableList}.
+   * Splits the input string at the {first|last} occurrence of the given separator and returns the
+   * resulting partition as a three-tuple of Strings, contained in a {@code MutableList}.
    *
-   * <p>If the input string does not contain the separator, the tuple will
-   * consist of the original input string and two empty strings.
+   * <p>If the input string does not contain the separator, the tuple will consist of the original
+   * input string and two empty strings.
    *
-   * <p>This method emulates the behavior of Python's str.partition() and
-   * str.rpartition(), depending on the value of the {@code forward} flag.
+   * <p>This method emulates the behavior of Python's str.partition() and str.rpartition(),
+   * depending on the value of the {@code forward} flag.
    *
    * @param input The input string
    * @param separator The string to split on
-   * @param forward A flag that controls whether the input string is split around
-   *    the first ({@code true}) or last ({@code false}) occurrence of the separator.
+   * @param forward A flag that controls whether the input string is split around the first ({@code
+   *     true}) or last ({@code false}) occurrence of the separator.
    * @return A three-tuple (List) of the form [part_before_separator, separator,
-   *    part_after_separator].
-   *
+   *     part_after_separator].
    */
-  private static List<String> stringPartition(String input, String separator, boolean forward)
-      throws IllegalArgumentException {
+  private static List<String> stringPartition(String input, String separator, boolean forward) {
     if (separator.isEmpty()) {
       throw new IllegalArgumentException("Empty separator");
     }
@@ -488,7 +521,7 @@ public class MethodLibrary {
     doc =
         "Returns a copy of the string with its first character capitalized and the rest "
             + "lowercased. This method does not support non-ascii characters.",
-    mandatoryPositionals = {@Param(name = "self", type = String.class, doc = "This string.")}
+    parameters = {@Param(name = "self", type = String.class, doc = "This string.")}
   )
   private static final BuiltinFunction capitalize =
       new BuiltinFunction("capitalize") {
@@ -508,7 +541,7 @@ public class MethodLibrary {
       + "uppercase letter while the remaining letters are lowercase. In this "
       + "context, a word means strictly a sequence of letters. This method does "
       + "not support supplementary Unicode characters.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction title = new BuiltinFunction("title") {
     @SuppressWarnings("unused")
@@ -552,10 +585,9 @@ public class MethodLibrary {
           + "or -1 if no such index exists, optionally restricting to "
           + "[<code>start</code>:<code>end</code>], "
           + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sub", type = String.class, doc = "The substring to find.")},
-      optionalPositionals = {
+        @Param(name = "sub", type = String.class, doc = "The substring to find."),
         @Param(name = "start", type = Integer.class, defaultValue = "0",
             doc = "Restrict to search from this position."),
         @Param(name = "end", type = Integer.class, noneable = true, defaultValue = "None",
@@ -572,10 +604,9 @@ public class MethodLibrary {
           + "or -1 if no such index exists, optionally restricting to "
           + "[<code>start</code>:<code>end]</code>, "
           + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sub", type = String.class, doc = "The substring to find.")},
-      optionalPositionals = {
+        @Param(name = "sub", type = String.class, doc = "The substring to find."),
         @Param(name = "start", type = Integer.class, defaultValue = "0",
             doc = "Restrict to search from this position."),
         @Param(name = "end", type = Integer.class, noneable = true, defaultValue = "None",
@@ -587,69 +618,98 @@ public class MethodLibrary {
     }
   };
 
-  @SkylarkSignature(name = "rindex", objectType = StringModule.class, returnType = Integer.class,
-      doc = "Returns the last index where <code>sub</code> is found, "
-          + "or raises an error if no such index exists, optionally restricting to "
-          + "[<code>start</code>:<code>end</code>], "
-          + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
-      mandatoryPositionals = {
-        @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sub", type = String.class, doc = "The substring to find.")},
-      optionalPositionals = {
-        @Param(name = "start", type = Integer.class, defaultValue = "0",
-            doc = "Restrict to search from this position."),
-        @Param(name = "end", type = Integer.class, noneable = true, defaultValue = "None",
-            doc = "optional position before which to restrict to search.")},
-      useLocation = true)
-  private static final BuiltinFunction rindex = new BuiltinFunction("rindex") {
-    public Integer invoke(String self, String sub, Integer start, Object end,
-        Location loc) throws EvalException, ConversionException {
-      int res = stringFind(false, self, sub, start, end, "'end' argument to rindex");
-      if (res < 0) {
-        throw new EvalException(loc, Printer.format("substring %r not found in %r", sub, self));
-      }
-      return res;
-    }
-  };
+  @SkylarkSignature(
+    name = "rindex",
+    objectType = StringModule.class,
+    returnType = Integer.class,
+    doc =
+        "Returns the last index where <code>sub</code> is found, "
+            + "or raises an error if no such index exists, optionally restricting to "
+            + "[<code>start</code>:<code>end</code>], "
+            + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
+    parameters = {
+      @Param(name = "self", type = String.class, doc = "This string."),
+      @Param(name = "sub", type = String.class, doc = "The substring to find."),
+      @Param(
+        name = "start",
+        type = Integer.class,
+        defaultValue = "0",
+        doc = "Restrict to search from this position."
+      ),
+      @Param(
+        name = "end",
+        type = Integer.class,
+        noneable = true,
+        defaultValue = "None",
+        doc = "optional position before which to restrict to search."
+      )
+    },
+    useLocation = true
+  )
+  private static final BuiltinFunction rindex =
+      new BuiltinFunction("rindex") {
+        public Integer invoke(String self, String sub, Integer start, Object end, Location loc)
+            throws EvalException {
+          int res = stringFind(false, self, sub, start, end, "'end' argument to rindex");
+          if (res < 0) {
+            throw new EvalException(loc, Printer.format("substring %r not found in %r", sub, self));
+          }
+          return res;
+        }
+      };
 
-  @SkylarkSignature(name = "index", objectType = StringModule.class, returnType = Integer.class,
-      doc = "Returns the first index where <code>sub</code> is found, "
-          + "or raises an error if no such index exists, optionally restricting to "
-          + "[<code>start</code>:<code>end]</code>, "
-          + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
-      mandatoryPositionals = {
-        @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sub", type = String.class, doc = "The substring to find.")},
-      optionalPositionals = {
-        @Param(name = "start", type = Integer.class, defaultValue = "0",
-            doc = "Restrict to search from this position."),
-        @Param(name = "end", type = Integer.class, noneable = true,
-            doc = "optional position before which to restrict to search.")},
-      useLocation = true)
-  private static final BuiltinFunction index = new BuiltinFunction("index") {
-    public Integer invoke(String self, String sub, Integer start, Object end,
-        Location loc) throws EvalException, ConversionException {
-      int res = stringFind(true, self, sub, start, end, "'end' argument to index");
-      if (res < 0) {
-        throw new EvalException(loc, Printer.format("substring %r not found in %r", sub, self));
-      }
-      return res;
-    }
-  };
+  @SkylarkSignature(
+    name = "index",
+    objectType = StringModule.class,
+    returnType = Integer.class,
+    doc =
+        "Returns the first index where <code>sub</code> is found, "
+            + "or raises an error if no such index exists, optionally restricting to "
+            + "[<code>start</code>:<code>end]</code>, "
+            + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
+    parameters = {
+      @Param(name = "self", type = String.class, doc = "This string."),
+      @Param(name = "sub", type = String.class, doc = "The substring to find."),
+      @Param(
+        name = "start",
+        type = Integer.class,
+        defaultValue = "0",
+        doc = "Restrict to search from this position."
+      ),
+      @Param(
+        name = "end",
+        type = Integer.class,
+        noneable = true,
+        defaultValue = "None",
+        doc = "optional position before which to restrict to search."
+      )
+    },
+    useLocation = true
+  )
+  private static final BuiltinFunction index =
+      new BuiltinFunction("index") {
+        public Integer invoke(String self, String sub, Integer start, Object end, Location loc)
+            throws EvalException {
+          int res = stringFind(true, self, sub, start, end, "'end' argument to index");
+          if (res < 0) {
+            throw new EvalException(loc, Printer.format("substring %r not found in %r", sub, self));
+          }
+          return res;
+        }
+      };
 
   @SkylarkSignature(name = "splitlines", objectType = StringModule.class,
-      returnType = MutableList.class,
+      returnType = SkylarkList.class,
       doc =
       "Splits the string at line boundaries ('\\n', '\\r\\n', '\\r') "
       + "and returns the result as a list.",
-      mandatoryPositionals = {
-          @Param(name = "self", type = String.class, doc = "This string.")},
-      optionalPositionals = {
+      parameters = {
+          @Param(name = "self", type = String.class, doc = "This string."),
           @Param(name = "keepends", type = Boolean.class, defaultValue = "False",
               doc = "Whether the line breaks should be included in the resulting list.")})
   private static final BuiltinFunction splitLines = new BuiltinFunction("splitlines") {
     @SuppressWarnings("unused")
-    public MutableList<String> invoke(String self, Boolean keepEnds) throws EvalException {
+    public SkylarkList<String> invoke(String self, Boolean keepEnds) throws EvalException {
       List<String> result = new ArrayList<>();
       Matcher matcher = SPLIT_LINES_PATTERN.matcher(self);
       while (matcher.find()) {
@@ -665,7 +725,7 @@ public class MethodLibrary {
           result.add(line);
         }
       }
-      return new MutableList(result);
+      return SkylarkList.createImmutable(result);
     }
   };
 
@@ -675,7 +735,7 @@ public class MethodLibrary {
   @SkylarkSignature(name = "isalpha", objectType = StringModule.class, returnType = Boolean.class,
     doc = "Returns True if all characters in the string are alphabetic ([a-zA-Z]) and there is "
         + "at least one character.",
-    mandatoryPositionals = {
+    parameters = {
         @Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction isalpha = new BuiltinFunction("isalpha") {
     @SuppressWarnings("unused") // Called via Reflection
@@ -688,7 +748,7 @@ public class MethodLibrary {
       doc =
       "Returns True if all characters in the string are alphanumeric ([a-zA-Z0-9]) and there is "
       + "at least one character.",
-      mandatoryPositionals = {@Param(name = "self", type = String.class, doc = "This string.")})
+      parameters = {@Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction isAlnum = new BuiltinFunction("isalnum") {
     @SuppressWarnings("unused") // Called via Reflection
     public Boolean invoke(String self) throws EvalException {
@@ -700,7 +760,7 @@ public class MethodLibrary {
       doc =
       "Returns True if all characters in the string are digits ([0-9]) and there is "
       + "at least one character.",
-      mandatoryPositionals = {@Param(name = "self", type = String.class, doc = "This string.")})
+      parameters = {@Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction isDigit = new BuiltinFunction("isdigit") {
     @SuppressWarnings("unused") // Called via Reflection
     public Boolean invoke(String self) throws EvalException {
@@ -712,7 +772,7 @@ public class MethodLibrary {
       doc =
       "Returns True if all characters are white space characters and the string "
       + "contains at least one character.",
-      mandatoryPositionals = {@Param(name = "self", type = String.class, doc = "This string.")})
+      parameters = {@Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction isSpace = new BuiltinFunction("isspace") {
     @SuppressWarnings("unused") // Called via Reflection
     public Boolean invoke(String self) throws EvalException {
@@ -724,7 +784,7 @@ public class MethodLibrary {
       doc =
       "Returns True if all cased characters in the string are lowercase and there is "
       + "at least one character.",
-      mandatoryPositionals = {@Param(name = "self", type = String.class, doc = "This string.")})
+      parameters = {@Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction isLower = new BuiltinFunction("islower") {
     @SuppressWarnings("unused") // Called via Reflection
     public Boolean invoke(String self) throws EvalException {
@@ -737,7 +797,7 @@ public class MethodLibrary {
       doc =
       "Returns True if all cased characters in the string are uppercase and there is "
       + "at least one character.",
-      mandatoryPositionals = {@Param(name = "self", type = String.class, doc = "This string.")})
+      parameters = {@Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction isUpper = new BuiltinFunction("isupper") {
     @SuppressWarnings("unused") // Called via Reflection
     public Boolean invoke(String self) throws EvalException {
@@ -751,7 +811,7 @@ public class MethodLibrary {
       "Returns True if the string is in title case and it contains at least one character. "
       + "This means that every uppercase character must follow an uncased one (e.g. whitespace) "
       + "and every lowercase character must follow a cased one (e.g. uppercase or lowercase).",
-      mandatoryPositionals = {@Param(name = "self", type = String.class, doc = "This string.")})
+      parameters = {@Param(name = "self", type = String.class, doc = "This string.")})
   private static final BuiltinFunction isTitle = new BuiltinFunction("istitle") {
     @SuppressWarnings("unused") // Called via Reflection
     public Boolean invoke(String self) throws EvalException {
@@ -818,10 +878,9 @@ public class MethodLibrary {
       doc = "Returns the number of (non-overlapping) occurrences of substring <code>sub</code> in "
           + "string, optionally restricting to [<code>start</code>:<code>end</code>], "
           + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sub", type = String.class, doc = "The substring to count.")},
-      optionalPositionals = {
+        @Param(name = "sub", type = String.class, doc = "The substring to count."),
         @Param(name = "start", type = Integer.class, defaultValue = "0",
             doc = "Restrict to search from this position."),
         @Param(name = "end", type = Integer.class, noneable = true, defaultValue = "None",
@@ -847,10 +906,9 @@ public class MethodLibrary {
       doc = "Returns True if the string ends with <code>sub</code>, "
           + "otherwise False, optionally restricting to [<code>start</code>:<code>end</code>], "
           + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sub", type = String.class, doc = "The substring to check.")},
-      optionalPositionals = {
+        @Param(name = "sub", type = String.class, doc = "The substring to check."),
         @Param(name = "start", type = Integer.class, defaultValue = "0",
             doc = "Test beginning at this position."),
         @Param(name = "end", type = Integer.class, noneable = true, defaultValue = "None",
@@ -865,49 +923,66 @@ public class MethodLibrary {
   // In Python, formatting is very complex.
   // We handle here the simplest case which provides most of the value of the function.
   // https://docs.python.org/3/library/string.html#formatstrings
-  @SkylarkSignature(name = "format", objectType = StringModule.class, returnType = String.class,
-      doc = "Perform string interpolation. Format strings contain replacement fields "
-          + "surrounded by curly braces <code>{}</code>. Anything that is not contained "
-          + "in braces is considered literal text, which is copied unchanged to the output."
-          + "If you need to include a brace character in the literal text, it can be "
-          + "escaped by doubling: <code>{{</code> and <code>}}</code>"
-          + "A replacement field can be either a name, a number, or empty. Values are "
-          + "converted to strings using the <a href=\"globals.html#str\">str</a> function."
-          + "<pre class=\"language-python\">"
-          + "# Access in order:\n"
-          + "\"{} < {}\".format(4, 5) == \"4 < 5\"\n"
-          + "# Access by position:\n"
-          + "\"{1}, {0}\".format(2, 1) == \"1, 2\"\n"
-          + "# Access by name:\n"
-          + "\"x{key}x\".format(key = 2) == \"x2x\"</pre>\n",
-      mandatoryPositionals = {
-          @Param(name = "self", type = String.class, doc = "This string."),
-      },
-      extraPositionals =
-          @Param(name = "args", type = SkylarkList.class, defaultValue = "()",
-              doc = "List of arguments"),
-      extraKeywords = @Param(name = "kwargs", type = SkylarkDict.class, defaultValue = "{}",
-            doc = "Dictionary of arguments"),
-      useLocation = true)
-  private static final BuiltinFunction format = new BuiltinFunction("format") {
-    @SuppressWarnings("unused")
-    public String invoke(String self, SkylarkList<Object> args, SkylarkDict<?, ?> kwargs,
-        Location loc)
-        throws ConversionException, EvalException {
-      return new FormatParser(loc).format(
-          self, args.getImmutableList(), kwargs.getContents(String.class, Object.class, "kwargs"));
-    }
-  };
+  @SkylarkSignature(
+    name = "format",
+    objectType = StringModule.class,
+    returnType = String.class,
+    doc =
+        "Perform string interpolation. Format strings contain replacement fields "
+            + "surrounded by curly braces <code>{}</code>. Anything that is not contained "
+            + "in braces is considered literal text, which is copied unchanged to the output."
+            + "If you need to include a brace character in the literal text, it can be "
+            + "escaped by doubling: <code>{{</code> and <code>}}</code>"
+            + "A replacement field can be either a name, a number, or empty. Values are "
+            + "converted to strings using the <a href=\"globals.html#str\">str</a> function."
+            + "<pre class=\"language-python\">"
+            + "# Access in order:\n"
+            + "\"{} < {}\".format(4, 5) == \"4 < 5\"\n"
+            + "# Access by position:\n"
+            + "\"{1}, {0}\".format(2, 1) == \"1, 2\"\n"
+            + "# Access by name:\n"
+            + "\"x{key}x\".format(key = 2) == \"x2x\"</pre>\n",
+    parameters = {
+      @Param(name = "self", type = String.class, doc = "This string."),
+    },
+    extraPositionals =
+        @Param(
+          name = "args",
+          type = SkylarkList.class,
+          defaultValue = "()",
+          doc = "List of arguments"
+        ),
+    extraKeywords =
+        @Param(
+          name = "kwargs",
+          type = SkylarkDict.class,
+          defaultValue = "{}",
+          doc = "Dictionary of arguments"
+        ),
+    useLocation = true
+  )
+  private static final BuiltinFunction format =
+      new BuiltinFunction("format") {
+        @SuppressWarnings("unused")
+        public String invoke(
+            String self, SkylarkList<Object> args, SkylarkDict<?, ?> kwargs, Location loc)
+            throws EvalException {
+          return new FormatParser(loc)
+              .format(
+                  self,
+                  args.getImmutableList(),
+                  kwargs.getContents(String.class, Object.class, "kwargs"));
+        }
+      };
 
   @SkylarkSignature(name = "startswith", objectType = StringModule.class,
       returnType = Boolean.class,
       doc = "Returns True if the string starts with <code>sub</code>, "
           + "otherwise False, optionally restricting to [<code>start</code>:<code>end</code>], "
           + "<code>start</code> being inclusive and <code>end</code> being exclusive.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = String.class, doc = "This string."),
-        @Param(name = "sub", type = String.class, doc = "The substring to check.")},
-      optionalPositionals = {
+        @Param(name = "sub", type = String.class, doc = "The substring to check."),
         @Param(name = "start", type = Integer.class, defaultValue = "0",
             doc = "Test beginning at this position."),
         @Param(name = "end", type = Integer.class, noneable = true, defaultValue = "None",
@@ -919,126 +994,28 @@ public class MethodLibrary {
     }
   };
 
-  // slice operator
-  @SkylarkSignature(
-    name = "$slice",
-    objectType = String.class,
-    documented = false,
-    mandatoryPositionals = {
-      @Param(name = "self", type = String.class, doc = "This string."),
-      @Param(name = "start", type = Object.class, doc = "start position of the slice."),
-      @Param(name = "end", type = Object.class, doc = "end position of the slice.")
-    },
-    optionalPositionals = {
-      @Param(name = "step", type = Integer.class, defaultValue = "1", doc = "step value.")
-    },
-    doc =
-        "x[<code>start</code>:<code>end</code>:<code>step</code>] returns a slice or a list slice. "
-            + "Values may be negative and can be omitted.",
-    useLocation = true
-  )
-  private static final BuiltinFunction stringSlice =
-      new BuiltinFunction("$slice") {
-        @SuppressWarnings("unused") // Accessed via Reflection.
-        public Object invoke(String self, Object start, Object end, Integer step, Location loc)
-            throws EvalException, ConversionException {
-          List<Integer> indices = getSliceIndices(start, end, step, self.length(), loc);
-          char[] result = new char[indices.size()];
-          char[] original = self.toCharArray();
-          int resultIndex = 0;
-          for (int originalIndex : indices) {
-            result[resultIndex] = original[originalIndex];
-            ++resultIndex;
-          }
-          return new String(result);
-        }
-      };
-
-  @SkylarkSignature(
-    name = "$slice",
-    objectType = MutableList.class,
-    returnType = MutableList.class,
-    documented = false,
-    mandatoryPositionals = {
-      @Param(name = "self", type = MutableList.class, doc = "This list."),
-      @Param(name = "start", type = Object.class, doc = "start position of the slice."),
-      @Param(name = "end", type = Object.class, doc = "end position of the slice.")
-    },
-    optionalPositionals = {
-      @Param(name = "step", type = Integer.class, defaultValue = "1", doc = "step value.")
-    },
-    doc =
-        "x[<code>start</code>:<code>end</code>:<code>step</code>] returns a slice or a list slice."
-            + "Values may be negative and can be omitted.",
-    useLocation = true,
-    useEnvironment = true
-  )
-  private static final BuiltinFunction mutableListSlice =
-      new BuiltinFunction("$slice") {
-        @SuppressWarnings("unused") // Accessed via Reflection.
-        public MutableList<Object> invoke(
-            MutableList<Object> self, Object start, Object end, Integer step, Location loc,
-            Environment env)
-            throws EvalException, ConversionException {
-          return new MutableList(sliceList(self, start, end, step, loc), env);
-        }
-      };
-
-  @SkylarkSignature(
-    name = "$slice",
-    objectType = Tuple.class,
-    returnType = Tuple.class,
-    documented = false,
-    mandatoryPositionals = {
-      @Param(name = "self", type = Tuple.class, doc = "This tuple."),
-      @Param(name = "start", type = Object.class, doc = "start position of the slice."),
-      @Param(name = "end", type = Object.class, doc = "end position of the slice.")
-    },
-    optionalPositionals = {
-      @Param(name = "step", type = Integer.class, defaultValue = "1", doc = "step value.")
-    },
-    doc =
-        "x[<code>start</code>:<code>end</code>:<code>step</code>] returns a slice or a list slice. "
-            + "Values may be negative and can be omitted.",
-    useLocation = true
-  )
-  private static final BuiltinFunction tupleSlice =
-      new BuiltinFunction("$slice") {
-        @SuppressWarnings("unused") // Accessed via Reflection.
-        public Tuple<Object> invoke(
-            Tuple<Object> self, Object start, Object end, Integer step, Location loc)
-            throws EvalException, ConversionException {
-          return Tuple.copyOf(sliceList(self, start, end, step, loc));
-        }
-      };
-
-  private static List<Object> sliceList(
-      List<Object> original, Object startObj, Object endObj, int step, Location loc)
-      throws EvalException {
-    int length = original.size();
-    ImmutableList.Builder<Object> slice = ImmutableList.builder();
-    for (int pos : getSliceIndices(startObj, endObj, step, length, loc)) {
-      slice.add(original.get(pos));
-    }
-    return slice.build();
-  }
-
   /**
    *  Calculates the indices of the elements that should be included in the slice [start:end:step]
    * of a sequence with the given length.
    */
-  private static List<Integer> getSliceIndices(
-      Object startObj, Object endObj, int step, int length, Location loc) throws EvalException {
+  public static List<Integer> getSliceIndices(
+      Object startObj, Object endObj, Object stepObj, int length, Location loc
+  ) throws EvalException {
+
+    if (!(stepObj instanceof Integer)) {
+      throw new EvalException(loc, "slice step must be an integer");
+    }
+    int step = ((Integer) stepObj).intValue();
     if (step == 0) {
       throw new EvalException(loc, "slice step cannot be zero");
     }
-    int start = getIndex(startObj,
+    int start = getSliceIndex(startObj,
         step,
         /*positiveStepDefault=*/ 0,
         /*negativeStepDefault=*/ length - 1,
         /*length=*/ length,
         loc);
-    int end = getIndex(endObj,
+    int end = getSliceIndex(endObj,
         step,
         /*positiveStepDefault=*/ length,
         /*negativeStepDefault=*/ -1,
@@ -1058,13 +1035,13 @@ public class MethodLibrary {
    * <p>If the value is {@code None}, the return value of this methods depends on the sign of the
    * slice step.
    */
-  private static int getIndex(Object value, int step, int positiveStepDefault,
+  private static int getSliceIndex(Object value, int step, int positiveStepDefault,
       int negativeStepDefault, int length, Location loc) throws EvalException {
     if (value == Runtime.NONE) {
       return step < 0 ? negativeStepDefault : positiveStepDefault;
     } else {
       try {
-        return clampIndex(Type.INTEGER.cast(value), length);
+        return MethodLibrary.clampIndex(Type.INTEGER.cast(value), length);
       } catch (ClassCastException ex) {
         throw new EvalException(loc, String.format("'%s' is not a valid int", value));
       }
@@ -1139,7 +1116,7 @@ public class MethodLibrary {
     name = "all",
     returnType = Boolean.class,
     doc = "Returns true if all elements evaluate to True or if the collection is empty.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "elements", type = Object.class, doc = "A string or a collection of elements.")
     },
     useLocation = true
@@ -1156,7 +1133,7 @@ public class MethodLibrary {
     name = "any",
     returnType = Boolean.class,
     doc = "Returns true if at least one element evaluates to True.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "elements", type = Object.class, doc = "A string or a collection of elements.")
     },
     useLocation = true
@@ -1187,18 +1164,17 @@ public class MethodLibrary {
     doc =
         "Sort a collection. Elements are sorted first by their type, "
             + "then by their value (in ascending order).",
-    mandatoryPositionals = {@Param(name = "self", type = Object.class, doc = "This collection.")},
+    parameters = {@Param(name = "self", type = Object.class, doc = "This collection.")},
     useLocation = true,
     useEnvironment = true
   )
   private static final BuiltinFunction sorted =
       new BuiltinFunction("sorted") {
         public <E> MutableList<E> invoke(Object self, Location loc, Environment env)
-            throws EvalException, ConversionException {
+            throws EvalException {
           try {
             return new MutableList(
-                EvalUtils.SKYLARK_COMPARATOR.sortedCopy(EvalUtils.toCollection(self, loc)),
-                env);
+                EvalUtils.SKYLARK_COMPARATOR.sortedCopy(EvalUtils.toCollection(self, loc)), env);
           } catch (EvalUtils.ComparisonException e) {
             throw new EvalException(loc, e);
           }
@@ -1209,7 +1185,7 @@ public class MethodLibrary {
     name = "reversed",
     returnType = MutableList.class,
     doc = "Returns a list that contains the elements of the original sequence in reversed order.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(
         name = "sequence",
         type = Object.class,
@@ -1244,16 +1220,18 @@ public class MethodLibrary {
     objectType = MutableList.class,
     returnType = Runtime.NoneType.class,
     doc = "Adds an item to the end of the list.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = MutableList.class, doc = "This list."),
       @Param(name = "item", type = Object.class, doc = "Item to add at the end.")
     },
     useLocation = true,
-    useEnvironment = true)
+    useEnvironment = true
+  )
   private static final BuiltinFunction append =
       new BuiltinFunction("append") {
-        public Runtime.NoneType invoke(MutableList<Object> self, Object item,
-            Location loc, Environment env) throws EvalException, ConversionException {
+        public Runtime.NoneType invoke(
+            MutableList<Object> self, Object item, Location loc, Environment env)
+            throws EvalException {
           self.add(item, loc, env);
           return Runtime.NONE;
         }
@@ -1264,7 +1242,7 @@ public class MethodLibrary {
     objectType = MutableList.class,
     returnType = Runtime.NoneType.class,
     doc = "Inserts an item at a given position.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = MutableList.class, doc = "This list."),
       @Param(name = "index", type = Integer.class, doc = "The index of the given position."),
       @Param(name = "item", type = Object.class, doc = "The item.")
@@ -1276,7 +1254,7 @@ public class MethodLibrary {
       new BuiltinFunction("insert") {
         public Runtime.NoneType invoke(
             MutableList<Object> self, Integer index, Object item, Location loc, Environment env)
-            throws EvalException, ConversionException {
+            throws EvalException {
           self.add(clampIndex(index, self.size()), item, loc, env);
           return Runtime.NONE;
         }
@@ -1287,7 +1265,7 @@ public class MethodLibrary {
     objectType = MutableList.class,
     returnType = Runtime.NoneType.class,
     doc = "Adds all items to the end of the list.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = MutableList.class, doc = "This list."),
       @Param(name = "items", type = SkylarkList.class, doc = "Items to add at the end.")
     },
@@ -1298,7 +1276,7 @@ public class MethodLibrary {
       new BuiltinFunction("extend") {
         public Runtime.NoneType invoke(
             MutableList<Object> self, SkylarkList<Object> items, Location loc, Environment env)
-            throws EvalException, ConversionException {
+            throws EvalException {
           self.addAll(items, loc, env);
           return Runtime.NONE;
         }
@@ -1311,7 +1289,7 @@ public class MethodLibrary {
     doc =
         "Returns the index in the list of the first item whose value is x. "
             + "It is an error if there is no such item.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = MutableList.class, doc = "This list."),
       @Param(name = "x", type = Object.class, doc = "The object to search.")
     },
@@ -1338,7 +1316,7 @@ public class MethodLibrary {
     doc =
         "Removes the first item from the list whose value is x. "
             + "It is an error if there is no such item.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = MutableList.class, doc = "This list."),
       @Param(name = "x", type = Object.class, doc = "The object to remove.")
     },
@@ -1367,10 +1345,8 @@ public class MethodLibrary {
         "Removes the item at the given position in the list, and returns it. "
             + "If no <code>index</code> is specified, "
             + "it removes and returns the last item in the list.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = MutableList.class, doc = "This list."),
-    },
-    optionalPositionals = {
       @Param(
         name = "i",
         type = Integer.class,
@@ -1402,11 +1378,9 @@ public class MethodLibrary {
         "Removes a <code>key</code> from the dict, and returns the associated value. "
             + "If entry with that key was found, return the specified <code>default</code> value;"
             + "if no default value was specified, fail instead.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = SkylarkDict.class, doc = "This dict."),
       @Param(name = "key", type = Object.class, doc = "The key."),
-    },
-    optionalPositionals = {
       @Param(name = "default", type = Object.class, defaultValue = "unbound",
           doc = "a default value if the key is absent."),
     },
@@ -1445,7 +1419,7 @@ public class MethodLibrary {
             + "according to the builtin total order. "
             + "Thus if keys are numbers, the smallest key is returned first; "
             + "if they are lists or strings, they are compared lexicographically, etc.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = SkylarkDict.class, doc = "This dict.")
     },
     useLocation = true,
@@ -1471,7 +1445,7 @@ public class MethodLibrary {
     objectType = SkylarkDict.class,
     returnType = Runtime.NoneType.class,
     doc = "Remove all items from the dictionary.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = SkylarkDict.class, doc = "This dict.")
     },
     useLocation = true,
@@ -1496,11 +1470,9 @@ public class MethodLibrary {
             + "If not, insert key with a value of <code>default</code> "
             + "and return <code>default</code>. "
             + "<code>default</code> defaults to <code>None</code>.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = SkylarkDict.class, doc = "This dict."),
       @Param(name = "key", type = Object.class, doc = "The key."),
-    },
-    optionalPositionals = {
       @Param(
         name = "default",
         type = Object.class,
@@ -1534,7 +1506,7 @@ public class MethodLibrary {
     objectType = SkylarkDict.class,
     returnType = Runtime.NoneType.class,
     doc = "Update the dictionary with the key/value pairs from other, overwriting existing keys.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "self", type = SkylarkDict.class, doc = "This dict."),
       @Param(name = "other", type = SkylarkDict.class, doc = "The values to add."),
     },
@@ -1554,133 +1526,53 @@ public class MethodLibrary {
         }
       };
 
-  // dictionary access operator
-  @SkylarkSignature(name = "$index", documented = false, objectType = SkylarkDict.class,
-      doc = "Looks up a value in a dictionary.",
-      mandatoryPositionals = {
-        @Param(name = "self", type = SkylarkDict.class, doc = "This dict."),
-        @Param(name = "key", type = Object.class, doc = "The index or key to access.")},
-      useLocation = true, useEnvironment = true)
-  private static final BuiltinFunction dictIndexOperator = new BuiltinFunction("$index") {
-      public Object invoke(SkylarkDict<?, ?> self, Object key,
-        Location loc, Environment env) throws EvalException, ConversionException {
-      if (!self.containsKey(key)) {
-        throw new EvalException(loc, Printer.format("Key %r not found in dictionary", key));
-      }
-      return SkylarkType.convertToSkylark(self.get(key), env);
-    }
-  };
-
-  // list access operator
   @SkylarkSignature(
-    name = "$index",
-    documented = false,
-    objectType = MutableList.class,
-    doc = "Returns the nth element of a list.",
-    mandatoryPositionals = {
-      @Param(name = "self", type = MutableList.class, doc = "This list."),
-      @Param(name = "key", type = Integer.class, doc = "The index or key to access.")
-    },
-    useLocation = true,
+    name = "values",
+    objectType = SkylarkDict.class,
+    returnType = MutableList.class,
+    doc =
+        "Returns the list of values. Dictionaries are always sorted by their keys:"
+            + "<pre class=\"language-python\">"
+            + "{2: \"a\", 4: \"b\", 1: \"c\"}.values() == [\"c\", \"a\", \"b\"]</pre>\n",
+    parameters = {@Param(name = "self", type = SkylarkDict.class, doc = "This dict.")},
     useEnvironment = true
   )
-  private static final BuiltinFunction listIndexOperator =
-      new BuiltinFunction("$index") {
-        public Object invoke(MutableList<?> self, Integer key, Location loc, Environment env)
-            throws EvalException, ConversionException {
-          if (self.isEmpty()) {
-            throw new EvalException(loc, "List is empty");
-          }
-          int index = getListIndex(key, self.size(), loc);
-          return SkylarkType.convertToSkylark(self.get(index), env);
+  private static final BuiltinFunction values =
+      new BuiltinFunction("values") {
+        public MutableList<?> invoke(SkylarkDict<?, ?> self, Environment env) throws EvalException {
+          return new MutableList(self.values(), env);
         }
       };
 
-  // tuple access operator
   @SkylarkSignature(
-    name = "$index",
-    documented = false,
-    objectType = Tuple.class,
-    doc = "Returns the nth element of a tuple.",
-    mandatoryPositionals = {
-      @Param(name = "self", type = Tuple.class, doc = "This tuple."),
-      @Param(name = "key", type = Integer.class, doc = "The index or key to access.")
-    },
-    useLocation = true,
+    name = "items",
+    objectType = SkylarkDict.class,
+    returnType = MutableList.class,
+    doc =
+        "Returns the list of key-value tuples. Dictionaries are always sorted by their keys:"
+            + "<pre class=\"language-python\">"
+            + "{2: \"a\", 4: \"b\", 1: \"c\"}.items() == [(1, \"c\"), (2, \"a\"), (4, \"b\")]"
+            + "</pre>\n",
+    parameters = {@Param(name = "self", type = SkylarkDict.class, doc = "This dict.")},
     useEnvironment = true
   )
-  private static final BuiltinFunction tupleIndexOperator =
-      new BuiltinFunction("$index") {
-        public Object invoke(Tuple<?> self, Integer key, Location loc, Environment env)
-            throws EvalException, ConversionException {
-          if (self.isEmpty()) {
-            throw new EvalException(loc, "tuple is empty");
+  private static final BuiltinFunction items =
+      new BuiltinFunction("items") {
+        public MutableList<?> invoke(SkylarkDict<?, ?> self, Environment env) throws EvalException {
+          List<Object> list = Lists.newArrayListWithCapacity(self.size());
+          for (Map.Entry<?, ?> entries : self.entrySet()) {
+            list.add(Tuple.of(entries.getKey(), entries.getValue()));
           }
-          int index = getListIndex(key, self.size(), loc);
-          return SkylarkType.convertToSkylark(self.get(index), env);
+          return new MutableList(list, env);
         }
       };
-
-  @SkylarkSignature(
-    name = "$index",
-    documented = false,
-    objectType = String.class,
-    doc = "Returns the nth element of a string.",
-    mandatoryPositionals = {
-      @Param(name = "self", type = String.class, doc = "This string."),
-      @Param(name = "key", type = Integer.class, doc = "The index or key to access.")
-    },
-    useLocation = true
-  )
-  private static final BuiltinFunction stringIndexOperator =
-      new BuiltinFunction("$index") {
-        public Object invoke(String self, Integer key, Location loc)
-            throws EvalException, ConversionException {
-          int index = getListIndex(key, self.length(), loc);
-          return self.substring(index, index + 1);
-        }
-      };
-
-  @SkylarkSignature(name = "values", objectType = SkylarkDict.class,
-      returnType = MutableList.class,
-      doc = "Returns the list of values. Dictionaries are always sorted by their keys:"
-          + "<pre class=\"language-python\">"
-          + "{2: \"a\", 4: \"b\", 1: \"c\"}.values() == [\"c\", \"a\", \"b\"]</pre>\n",
-      mandatoryPositionals = {@Param(name = "self", type = SkylarkDict.class, doc = "This dict.")},
-      useEnvironment = true)
-  private static final BuiltinFunction values = new BuiltinFunction("values") {
-    public MutableList<?> invoke(SkylarkDict<?, ?> self,
-        Environment env) throws EvalException, ConversionException {
-      return new MutableList(self.values(), env);
-    }
-  };
-
-  @SkylarkSignature(name = "items", objectType = SkylarkDict.class,
-      returnType = MutableList.class,
-      doc = "Returns the list of key-value tuples. Dictionaries are always sorted by their keys:"
-          + "<pre class=\"language-python\">"
-          + "{2: \"a\", 4: \"b\", 1: \"c\"}.items() == [(1, \"c\"), (2, \"a\"), (4, \"b\")]"
-          + "</pre>\n",
-      mandatoryPositionals = {
-        @Param(name = "self", type = SkylarkDict.class, doc = "This dict.")},
-      useEnvironment = true)
-  private static final BuiltinFunction items = new BuiltinFunction("items") {
-    public MutableList<?> invoke(SkylarkDict<?, ?> self,
-        Environment env) throws EvalException, ConversionException {
-      List<Object> list = Lists.newArrayListWithCapacity(self.size());
-      for (Map.Entry<?, ?> entries : self.entrySet()) {
-        list.add(Tuple.of(entries.getKey(), entries.getValue()));
-      }
-      return new MutableList(list, env);
-    }
-  };
 
   @SkylarkSignature(name = "keys", objectType = SkylarkDict.class,
       returnType = MutableList.class,
       doc = "Returns the list of keys. Dictionaries are always sorted by their keys:"
           + "<pre class=\"language-python\">{2: \"a\", 4: \"b\", 1: \"c\"}.keys() == [1, 2, 4]"
           + "</pre>\n",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", type = SkylarkDict.class, doc = "This dict.")},
       useEnvironment = true)
   private static final BuiltinFunction keys = new BuiltinFunction("keys") {
@@ -1699,10 +1591,9 @@ public class MethodLibrary {
       doc = "Returns the value for <code>key</code> if <code>key</code> is in the dictionary, "
           + "else <code>default</code>. If <code>default</code> is not given, it defaults to "
           + "<code>None</code>, so that this method never throws an error.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "self", doc = "This dict."),
-        @Param(name = "key", doc = "The key to look for.")},
-      optionalPositionals = {
+        @Param(name = "key", doc = "The key to look for."),
         @Param(name = "default", defaultValue = "None",
             doc = "The default value to use (instead of None) if the key is not found.")})
   private static final BuiltinFunction get = new BuiltinFunction("get") {
@@ -1720,7 +1611,7 @@ public class MethodLibrary {
     returnType = Integer.class,
     documented = false,
     doc = "Unary minus operator.",
-    mandatoryPositionals = {
+    parameters = {
       @Param(name = "num", type = Integer.class, doc = "The number to negate.")
     }
   )
@@ -1736,7 +1627,7 @@ public class MethodLibrary {
         + "<pre class=\"language-python\">list([1, 2]) == [1, 2]\n"
         + "list(set([2, 3, 2])) == [2, 3]\n"
         + "list({5: \"a\", 2: \"b\", 4: \"c\"}) == [2, 4, 5]</pre>",
-      mandatoryPositionals = {@Param(name = "x", doc = "The object to convert.")},
+      parameters = {@Param(name = "x", doc = "The object to convert.")},
       useLocation = true, useEnvironment = true)
   private static final BuiltinFunction list = new BuiltinFunction("list") {
     public MutableList<?> invoke(Object x, Location loc, Environment env) throws EvalException {
@@ -1748,7 +1639,7 @@ public class MethodLibrary {
     name = "len",
     returnType = Integer.class,
     doc = "Returns the length of a string, list, tuple, set, or dictionary.",
-    mandatoryPositionals = {@Param(name = "x", doc = "The object to check length of.")},
+    parameters = {@Param(name = "x", doc = "The object to check length of.")},
     useLocation = true
   )
   private static final BuiltinFunction len =
@@ -1765,7 +1656,7 @@ public class MethodLibrary {
   @SkylarkSignature(name = "str", returnType = String.class, doc =
       "Converts any object to string. This is useful for debugging."
       + "<pre class=\"language-python\">str(\"ab\") == \"ab\"</pre>",
-      mandatoryPositionals = {@Param(name = "x", doc = "The object to convert.")})
+      parameters = {@Param(name = "x", doc = "The object to convert.")})
   private static final BuiltinFunction str = new BuiltinFunction("str") {
     public String invoke(Object x) {
       return Printer.str(x);
@@ -1775,7 +1666,7 @@ public class MethodLibrary {
   @SkylarkSignature(name = "repr", returnType = String.class, doc =
       "Converts any object to a string representation. This is useful for debugging.<br>"
       + "<pre class=\"language-python\">str(\"ab\") == \\\"ab\\\"</pre>",
-      mandatoryPositionals = {@Param(name = "x", doc = "The object to convert.")})
+      parameters = {@Param(name = "x", doc = "The object to convert.")})
   private static final BuiltinFunction repr = new BuiltinFunction("repr") {
     public String invoke(Object x) {
       return Printer.repr(x);
@@ -1786,84 +1677,142 @@ public class MethodLibrary {
       doc = "Constructor for the bool type. "
       + "It returns False if the object is None, False, an empty string, the number 0, or an "
       + "empty collection. Otherwise, it returns True.",
-      mandatoryPositionals = {@Param(name = "x", doc = "The variable to convert.")})
+      parameters = {@Param(name = "x", doc = "The variable to convert.")})
   private static final BuiltinFunction bool = new BuiltinFunction("bool") {
     public Boolean invoke(Object x) throws EvalException {
       return EvalUtils.toBoolean(x);
     }
   };
 
-  @SkylarkSignature(name = "int", returnType = Integer.class, doc = "Converts a value to int. "
-      + "If the argument is a string, it is converted using base 10 and raises an error if the "
-      + "conversion fails. If the argument is a bool, it returns 0 (False) or 1 (True). "
-      + "If the argument is an int, it is simply returned."
-      + "<pre class=\"language-python\">int(\"123\") == 123</pre>",
-      mandatoryPositionals = {
-        @Param(name = "x", type = Object.class, doc = "The string to convert.")},
-      useLocation = true)
-  private static final BuiltinFunction int_ = new BuiltinFunction("int") {
-    public Integer invoke(Object x, Location loc) throws EvalException {
-      if (x instanceof Boolean) {
-        return ((Boolean) x).booleanValue() ? 1 : 0;
-      } else if (x instanceof Integer) {
-        return (Integer) x;
-      } else if (x instanceof String) {
-        try {
-          return Integer.parseInt((String) x);
-        } catch (NumberFormatException e) {
-          throw new EvalException(loc,
-              "invalid literal for int(): " + Printer.repr(x));
-        }
-      } else {
-        throw new EvalException(loc,
-            Printer.format("%r is not of type string or int or bool", x));
-      }
-    }
-  };
+  @SkylarkSignature(
+    name = "int",
+    returnType = Integer.class,
+    doc =
+        "Converts a value to int. "
+            + "If the argument is a string, it is converted using the given base and raises an "
+            + "error if the conversion fails. "
+            + "The base can be between 2 and 36 (inclusive) and defaults to 10. "
+            + "The value can be prefixed with 0b/0o/ox to represent values in base 2/8/16. "
+            + "If such a prefix is present, a base of 0 can be used to automatically determine the "
+            + "correct base: "
+            + "<pre class=\"language-python\">int(\"0xFF\", 0) == int(\"0xFF\", 16) == 255</pre>"
+            + "If the argument is a bool, it returns 0 (False) or 1 (True). "
+            + "If the argument is an int, it is simply returned."
+            + "<pre class=\"language-python\">int(\"123\") == 123</pre>",
+    parameters = {
+      @Param(name = "x", type = Object.class, doc = "The string to convert."),
+      @Param(
+        name = "base",
+        type = Integer.class,
+        defaultValue = "10",
+        doc = "The base of the string."
+      )
+    },
+    useLocation = true
+  )
+  private static final BuiltinFunction int_ =
+      new BuiltinFunction("int") {
+        private final ImmutableMap<String, Integer> intPrefixes =
+            ImmutableMap.of("0b", 2, "0o", 8, "0x", 16);
 
-  @SkylarkSignature(name = "struct", returnType = SkylarkClassObject.class, doc =
-      "Creates an immutable struct using the keyword arguments as attributes. It is used to group "
-      + "multiple values together.Example:<br>"
-      + "<pre class=\"language-python\">s = struct(x = 2, y = 3)\n"
-      + "return s.x + getattr(s, \"y\")  # returns 5</pre>",
-      extraKeywords = @Param(name = "kwargs", doc = "the struct attributes"),
-      useLocation = true)
-  private static final BuiltinFunction struct = new BuiltinFunction("struct") {
-    @SuppressWarnings("unchecked")
-    public SkylarkClassObject invoke(SkylarkDict<String, Object> kwargs, Location loc)
-        throws EvalException {
-      return new SkylarkClassObject(kwargs, loc);
-    }
-  };
+        @SuppressWarnings("unused")
+        public Integer invoke(Object x, Integer base, Location loc) throws EvalException {
+          if (x instanceof String) {
+            return fromString(x, loc, base);
+          } else {
+            if (base != 10) {
+              throw new EvalException(loc, "int() can't convert non-string with explicit base");
+            }
+            if (x instanceof Boolean) {
+              return ((Boolean) x).booleanValue() ? 1 : 0;
+            } else if (x instanceof Integer) {
+              return (Integer) x;
+            }
+            throw new EvalException(
+                loc, Printer.format("%r is not of type string or int or bool", x));
+          }
+        }
+
+        private int fromString(Object x, Location loc, int base) throws EvalException {
+          String value = (String) x;
+          String prefix = getIntegerPrefix(value);
+
+          if (!prefix.isEmpty()) {
+            value = value.substring(prefix.length());
+            int expectedBase = intPrefixes.get(prefix);
+            if (base == 0) {
+              // Similar to Python, base 0 means "derive the base from the prefix".
+              base = expectedBase;
+            } else if (base != expectedBase) {
+              throw new EvalException(
+                  loc, Printer.format("invalid literal for int() with base %d: %r", base, x));
+            }
+          }
+
+          if (base < 2 || base > 36) {
+            throw new EvalException(loc, "int() base must be >= 2 and <= 36");
+          }
+          try {
+            return Integer.parseInt(value, base);
+          } catch (NumberFormatException e) {
+            throw new EvalException(
+                loc, Printer.format("invalid literal for int() with base %d: %r", base, x));
+          }
+        }
+
+        private String getIntegerPrefix(String value) {
+          value = value.toLowerCase();
+          for (String prefix : intPrefixes.keySet()) {
+            if (value.startsWith(prefix)) {
+              return prefix;
+            }
+          }
+          return "";
+        }
+      };
 
   @SkylarkSignature(
-      name = "set",
-      returnType = SkylarkNestedSet.class,
-      doc = "Creates a <a href=\"set.html\">set</a> from the <code>items</code>. "
-      + "The set supports nesting other sets of the same element type in it. "
-      + "A desired <a href=\"set.html\">iteration order</a> can also be specified.<br>"
-      + "Examples:<br><pre class=\"language-python\">set([\"a\", \"b\"])\n"
-      + "set([1, 2, 3], order=\"compile\")</pre>",
-      optionalPositionals = {
-        @Param(name = "items", type = Object.class, defaultValue = "[]",
-            doc = "The items to initialize the set with. May contain both standalone items "
-            + "and other sets."),
-        @Param(name = "order", type = String.class, defaultValue = "\"stable\"",
-            doc = "The ordering strategy for the set if it's nested, "
-            + "possible values are: <code>stable</code> (default), <code>compile</code>, "
-            + "<code>link</code> or <code>naive_link</code>. An explanation of the "
-            + "values can be found <a href=\"set.html\">here</a>.")},
-      useLocation = true)
-  private static final BuiltinFunction set = new BuiltinFunction("set") {
-    public SkylarkNestedSet invoke(Object items, String order,
-        Location loc) throws EvalException, ConversionException {
-      try {
-        return new SkylarkNestedSet(Order.parse(order), items, loc);
-      } catch (IllegalArgumentException ex) {
-        throw new EvalException(loc, ex);
-      }
-    }
-  };
+    name = "set",
+    returnType = SkylarkNestedSet.class,
+    doc =
+        "Creates a <a href=\"set.html\">set</a> from the <code>items</code>. "
+            + "The set supports nesting other sets of the same element type in it. "
+            + "A desired <a href=\"set.html\">iteration order</a> can also be specified.<br>"
+            + "Examples:<br><pre class=\"language-python\">set([\"a\", \"b\"])\n"
+            + "set([1, 2, 3], order=\"compile\")</pre>",
+    parameters = {
+      @Param(
+        name = "items",
+        type = Object.class,
+        defaultValue = "[]",
+        doc =
+            "The items to initialize the set with. May contain both standalone items "
+                + "and other sets."
+      ),
+      @Param(
+        name = "order",
+        type = String.class,
+        defaultValue = "\"stable\"",
+        doc =
+            "The ordering strategy for the set if it's nested, "
+                + "possible values are: <code>stable</code> (default), <code>compile</code>, "
+                + "<code>link</code> or <code>naive_link</code>. An explanation of the "
+                + "values can be found <a href=\"set.html\">here</a>."
+      )
+    },
+    useLocation = true
+  )
+  private static final BuiltinFunction set =
+      new BuiltinFunction("set") {
+        public SkylarkNestedSet invoke(Object items, String order, Location loc)
+            throws EvalException {
+          try {
+            return new SkylarkNestedSet(Order.parse(order), items, loc);
+          } catch (IllegalArgumentException ex) {
+            throw new EvalException(loc, ex);
+          }
+        }
+      };
 
   @SkylarkSignature(
     name = "dict",
@@ -1873,7 +1822,7 @@ public class MethodLibrary {
             + "argument and an optional set of keyword arguments. Values from the keyword argument "
             + "will overwrite values from the positional argument if a key appears multiple times. "
             + "Dictionaries are always sorted by their keys",
-    optionalPositionals = {
+    parameters = {
       @Param(
         name = "args",
         type = Object.class,
@@ -1936,7 +1885,7 @@ public class MethodLibrary {
       returnType = SkylarkNestedSet.class,
       doc = "Creates a new <a href=\"set.html\">set</a> that contains both "
           + "the input set as well as all additional elements.",
-      mandatoryPositionals = {
+      parameters = {
         @Param(name = "input", type = SkylarkNestedSet.class, doc = "The input set"),
         @Param(name = "new_elements", type = Iterable.class, doc = "The elements to be added")},
       useLocation = true)
@@ -1948,78 +1897,120 @@ public class MethodLibrary {
     }
   };
 
-  @SkylarkSignature(name = "enumerate", returnType = MutableList.class,
-      doc = "Returns a list of pairs (two-element tuples), with the index (int) and the item from"
-          + " the input list.\n<pre class=\"language-python\">"
-          + "enumerate([24, 21, 84]) == [(0, 24), (1, 21), (2, 84)]</pre>\n",
-      mandatoryPositionals = {
-        @Param(name = "list", type = SkylarkList.class, doc = "input list")
-      },
-      useEnvironment = true)
-  private static final BuiltinFunction enumerate = new BuiltinFunction("enumerate") {
-    public MutableList<?> invoke(SkylarkList<?> input, Environment env)
-        throws EvalException, ConversionException {
-      int count = 0;
-      List<SkylarkList<?>> result = Lists.newArrayList();
-      for (Object obj : input) {
-        result.add(Tuple.of(count, obj));
-        count++;
-      }
-      return new MutableList(result, env);
+  @SkylarkSignature(
+    name = "enumerate",
+    returnType = MutableList.class,
+    doc =
+        "Returns a list of pairs (two-element tuples), with the index (int) and the item from"
+            + " the input list.\n<pre class=\"language-python\">"
+            + "enumerate([24, 21, 84]) == [(0, 24), (1, 21), (2, 84)]</pre>\n",
+    parameters = {@Param(name = "list", type = SkylarkList.class, doc = "input list")},
+    useEnvironment = true
+  )
+  private static final BuiltinFunction enumerate =
+      new BuiltinFunction("enumerate") {
+        public MutableList<?> invoke(SkylarkList<?> input, Environment env) throws EvalException {
+          int count = 0;
+          List<SkylarkList<?>> result = Lists.newArrayList();
+          for (Object obj : input) {
+            result.add(Tuple.of(count, obj));
+            count++;
+          }
+          return new MutableList(result, env);
+        }
+      };
+
+  @SkylarkSignature(name = "hash", returnType = Integer.class,
+      doc = "Return a hash value for a string. This is computed deterministically using the same "
+          + "algorithm as Java's <code>String.hashCode()</code>, namely: "
+          + "<pre class=\"language-python\">s[0] * (31^(n-1)) + s[1] * (31^(n-2)) + ... + s[0]"
+          + "</pre> Hashing of values besides strings is not currently supported.",
+          // Deterministic hashing is important for the consistency of builds, hence why we
+          // promise a specific algorithm. This is in contrast to Java (Object.hashCode()) and
+          // Python, which promise stable hashing only within a given execution of the program.
+      parameters = {
+        @Param(name = "value", type = String.class,
+            doc = "String value to hash")
+      })
+  private static final BuiltinFunction hash = new BuiltinFunction("hash") {
+    public Integer invoke(String value) throws EvalException {
+      return value.hashCode();
     }
   };
 
-  @SkylarkSignature(name = "range", returnType = MutableList.class,
-      doc = "Creates a list where items go from <code>start</code> to <code>stop</code>, using a "
-          + "<code>step</code> increment. If a single argument is provided, items will "
-          + "range from 0 to that element."
-          + "<pre class=\"language-python\">range(4) == [0, 1, 2, 3]\n"
-          + "range(3, 9, 2) == [3, 5, 7]\n"
-          + "range(3, 0, -1) == [3, 2, 1]</pre>",
-      mandatoryPositionals = {
-        @Param(name = "start_or_stop", type = Integer.class,
-            doc = "Value of the start element if stop is provided, "
-            + "otherwise value of stop and the actual start is 0"),
-      },
-      optionalPositionals = {
-        @Param(name = "stop_or_none", type = Integer.class, noneable = true, defaultValue = "None",
-            doc = "optional index of the first item <i>not</i> to be included in the "
-            + "resulting list; generation of the list stops before <code>stop</code> is reached."),
-        @Param(name = "step", type = Integer.class, defaultValue = "1",
-            doc = "The increment (default is 1). It may be negative.")},
-      useLocation = true,
-      useEnvironment = true)
-  private static final BuiltinFunction range = new BuiltinFunction("range") {
-      public MutableList<?> invoke(Integer startOrStop, Object stopOrNone, Integer step,
-          Location loc, Environment env)
-        throws EvalException, ConversionException {
-      int start;
-      int stop;
-      if (stopOrNone == Runtime.NONE) {
-        start = 0;
-        stop = startOrStop;
-      } else {
-        start = startOrStop;
-        stop = Type.INTEGER.convert(stopOrNone, "'stop' operand of 'range'");
-      }
-      if (step == 0) {
-        throw new EvalException(loc, "step cannot be 0");
-      }
-      List<Integer> result = Lists.newArrayList();
-      if (step > 0) {
-        while (start < stop) {
-          result.add(start);
-          start += step;
+  @SkylarkSignature(
+    name = "range",
+    returnType = MutableList.class,
+    doc =
+        "Creates a list where items go from <code>start</code> to <code>stop</code>, using a "
+            + "<code>step</code> increment. If a single argument is provided, items will "
+            + "range from 0 to that element."
+            + "<pre class=\"language-python\">range(4) == [0, 1, 2, 3]\n"
+            + "range(3, 9, 2) == [3, 5, 7]\n"
+            + "range(3, 0, -1) == [3, 2, 1]</pre>",
+    parameters = {
+      @Param(
+        name = "start_or_stop",
+        type = Integer.class,
+        doc =
+            "Value of the start element if stop is provided, "
+                + "otherwise value of stop and the actual start is 0"
+      ),
+      @Param(
+        name = "stop_or_none",
+        type = Integer.class,
+        noneable = true,
+        defaultValue = "None",
+        doc =
+            "optional index of the first item <i>not</i> to be included in the resulting "
+                + "list; generation of the list stops before <code>stop</code> is reached."
+      ),
+      @Param(
+        name = "step",
+        type = Integer.class,
+        defaultValue = "1",
+        doc = "The increment (default is 1). It may be negative."
+      )
+    },
+    useLocation = true,
+    useEnvironment = true
+  )
+  private static final BuiltinFunction range =
+      new BuiltinFunction("range") {
+        public MutableList<?> invoke(
+            Integer startOrStop, Object stopOrNone, Integer step, Location loc, Environment env)
+            throws EvalException {
+          int start;
+          int stop;
+          if (stopOrNone == Runtime.NONE) {
+            start = 0;
+            stop = startOrStop;
+          } else {
+            start = startOrStop;
+            stop = Type.INTEGER.convert(stopOrNone, "'stop' operand of 'range'");
+          }
+          if (step == 0) {
+            throw new EvalException(loc, "step cannot be 0");
+          }
+          ArrayList<Integer> result = Lists.newArrayList();
+          if (step > 0) {
+            int size = (stop - start) / step;
+            result.ensureCapacity(size);
+            while (start < stop) {
+              result.add(start);
+              start += step;
+            }
+          } else {
+            int size = (start - stop) / step;
+            result.ensureCapacity(size);
+            while (start > stop) {
+              result.add(start);
+              start += step;
+            }
+          }
+          return new MutableList(result, env);
         }
-      } else {
-        while (start > stop) {
-          result.add(start);
-          start += step;
-        }
-      }
-      return new MutableList(result, env);
-    }
-  };
+      };
 
   /**
    * Returns a function-value implementing "select" (i.e. configurable attributes)
@@ -2027,9 +2018,8 @@ public class MethodLibrary {
    */
   @SkylarkSignature(name = "select",
       doc = "Creates a SelectorValue from the dict parameter.",
-      mandatoryPositionals = {
-        @Param(name = "x", type = SkylarkDict.class, doc = "The parameter to convert.")},
-      optionalNamedOnly = {
+      parameters = {
+        @Param(name = "x", type = SkylarkDict.class, doc = "The parameter to convert."),
         @Param(name = "no_match_error", type = String.class, defaultValue = "''",
             doc = "Optional custom error to report if no condition matches.")})
   private static final BuiltinFunction select = new BuiltinFunction("select") {
@@ -2039,63 +2029,82 @@ public class MethodLibrary {
     }
   };
 
-  /**
-   * Returns true if the object has a field of the given name, otherwise false.
-   */
-  @SkylarkSignature(name = "hasattr", returnType = Boolean.class,
-      doc = "Returns True if the object <code>x</code> has an attribute or method of the given "
-          + "<code>name</code>, otherwise False. Example:<br>"
-          + "<pre class=\"language-python\">hasattr(ctx.attr, \"myattr\")</pre>",
-      mandatoryPositionals = {
-        @Param(name = "x", doc = "The object to check."),
-        @Param(name = "name", type = String.class, doc = "The name of the attribute.")},
-      useLocation = true, useEnvironment = true)
-  private static final BuiltinFunction hasattr = new BuiltinFunction("hasattr") {
-    @SuppressWarnings("unused")
-    public Boolean invoke(Object obj, String name,
-        Location loc, Environment env) throws EvalException, ConversionException {
-      if (obj instanceof ClassObject && ((ClassObject) obj).getValue(name) != null) {
-        return true;
-      }
-      return hasMethod(obj, name, loc);
-    }
-  };
-
-  @SkylarkSignature(name = "getattr",
-      doc = "Returns the struct's field of the given name if it exists. If not, it either returns "
-          + "<code>default</code> (if specified) or raises an error. However, if there is a method "
-          + "of the given name, this method always raises an error, regardless of the "
-          + "presence of a default value. <code>getattr(x, \"foobar\")</code> is equivalent to "
-          + "<code>x.foobar</code>."
-          + "<pre class=\"language-python\">getattr(ctx.attr, \"myattr\")\n"
-          + "getattr(ctx.attr, \"myattr\", \"mydefault\")</pre>",
-      mandatoryPositionals = {
-        @Param(name = "x", doc = "The struct whose attribute is accessed."),
-        @Param(name = "name", doc = "The name of the struct attribute.")},
-      optionalPositionals = {
-        @Param(name = "default", defaultValue = "None",
-            doc = "The default value to return in case the struct "
-            + "doesn't have an attribute of the given name.")},
-      useLocation = true, useEnvironment = true)
-  private static final BuiltinFunction getattr = new BuiltinFunction("getattr") {
-    @SuppressWarnings("unused")
-    public Object invoke(Object obj, String name, Object defaultValue,
-        Location loc, Environment env) throws EvalException, ConversionException {
-      Object result = DotExpression.eval(obj, name, loc, env);
-      if (result == null) {
-        // 'Real' describes methods with structField() == false. Because DotExpression.eval returned
-        // null in this case, we know that structField() cannot return true.
-        boolean isRealMethod = hasMethod(obj, name, loc);
-        if (defaultValue != Runtime.NONE && !isRealMethod) {
-          return defaultValue;
+  /** Returns true if the object has a field of the given name, otherwise false. */
+  @SkylarkSignature(
+    name = "hasattr",
+    returnType = Boolean.class,
+    doc =
+        "Returns True if the object <code>x</code> has an attribute or method of the given "
+            + "<code>name</code>, otherwise False. Example:<br>"
+            + "<pre class=\"language-python\">hasattr(ctx.attr, \"myattr\")</pre>",
+    parameters = {
+      @Param(name = "x", doc = "The object to check."),
+      @Param(name = "name", type = String.class, doc = "The name of the attribute.")
+    },
+    useLocation = true,
+    useEnvironment = true
+  )
+  private static final BuiltinFunction hasattr =
+      new BuiltinFunction("hasattr") {
+        @SuppressWarnings("unused")
+        public Boolean invoke(Object obj, String name, Location loc, Environment env)
+            throws EvalException {
+          if (obj instanceof ClassObject && ((ClassObject) obj).getValue(name) != null) {
+            return true;
+          }
+          return hasMethod(obj, name, loc);
         }
-        throw new EvalException(loc, Printer.format("Object of type '%s' has no attribute %r%s",
-                EvalUtils.getDataTypeName(obj), name,
-                isRealMethod ? ", however, a method of that name exists" : ""));
-      }
-      return result;
-    }
-  };
+      };
+
+  @SkylarkSignature(
+    name = "getattr",
+    doc =
+        "Returns the struct's field of the given name if it exists. If not, it either returns "
+            + "<code>default</code> (if specified) or raises an error. However, if there is a "
+            + "method of the given name, this method always raises an error, regardless of the "
+            + "presence of a default value. <code>getattr(x, \"foobar\")</code> is equivalent to "
+            + "<code>x.foobar</code>."
+            + "<pre class=\"language-python\">getattr(ctx.attr, \"myattr\")\n"
+            + "getattr(ctx.attr, \"myattr\", \"mydefault\")</pre>",
+    parameters = {
+      @Param(name = "x", doc = "The struct whose attribute is accessed."),
+      @Param(name = "name", doc = "The name of the struct attribute."),
+      @Param(
+        name = "default",
+        defaultValue = "unbound",
+        doc =
+            "The default value to return in case the struct "
+                + "doesn't have an attribute of the given name."
+      )
+    },
+    useLocation = true,
+    useEnvironment = true
+  )
+  private static final BuiltinFunction getattr =
+      new BuiltinFunction("getattr") {
+        @SuppressWarnings("unused")
+        public Object invoke(
+            Object obj, String name, Object defaultValue, Location loc, Environment env)
+            throws EvalException {
+          Object result = DotExpression.eval(obj, name, loc, env);
+          if (result == null) {
+            // 'Real' describes methods with structField() == false. Because DotExpression.eval
+            // returned null in this case, we know that structField() cannot return true.
+            boolean isRealMethod = hasMethod(obj, name, loc);
+            if (defaultValue != Runtime.UNBOUND && !isRealMethod) {
+              return defaultValue;
+            }
+            throw new EvalException(
+                loc,
+                Printer.format(
+                    "Object of type '%s' has no attribute %r%s",
+                    EvalUtils.getDataTypeName(obj),
+                    name,
+                    isRealMethod ? ", however, a method of that name exists" : ""));
+          }
+          return result;
+        }
+      };
 
   /**
    * Returns whether the given object has a method with the given name.
@@ -2113,39 +2122,61 @@ public class MethodLibrary {
     }
   }
 
-  @SkylarkSignature(name = "dir", returnType = MutableList.class,
-      doc = "Returns a list strings: the names of the attributes and "
-          + "methods of the parameter object.",
-      mandatoryPositionals = {@Param(name = "x", doc = "The object to check.")},
-      useLocation = true, useEnvironment = true)
-  private static final BuiltinFunction dir = new BuiltinFunction("dir") {
-    public MutableList<?> invoke(Object object,
-        Location loc, Environment env) throws EvalException, ConversionException {
-      // Order the fields alphabetically.
-      Set<String> fields = new TreeSet<>();
-      if (object instanceof ClassObject) {
-        fields.addAll(((ClassObject) object).getKeys());
-      }
-      fields.addAll(Runtime.getFunctionNames(object.getClass()));
-      try {
-        fields.addAll(FuncallExpression.getMethodNames(object.getClass()));
-      } catch (ExecutionException e) {
-        // This shouldn't happen
-        throw new EvalException(loc, e.getMessage());
-      }
-      return new MutableList(fields, env);
-    }
-  };
+  @SkylarkSignature(
+    name = "dir",
+    returnType = MutableList.class,
+    doc =
+        "Returns a list strings: the names of the attributes and "
+            + "methods of the parameter object.",
+    parameters = {@Param(name = "x", doc = "The object to check.")},
+    useLocation = true,
+    useEnvironment = true
+  )
+  private static final BuiltinFunction dir =
+      new BuiltinFunction("dir") {
+        public MutableList<?> invoke(Object object, Location loc, Environment env)
+            throws EvalException {
+          // Order the fields alphabetically.
+          Set<String> fields = new TreeSet<>();
+          if (object instanceof ClassObject) {
+            fields.addAll(((ClassObject) object).getKeys());
+          }
+          fields.addAll(Runtime.getFunctionNames(object.getClass()));
+          try {
+            fields.addAll(FuncallExpression.getMethodNames(object.getClass()));
+          } catch (ExecutionException e) {
+            // This shouldn't happen
+            throw new EvalException(loc, e.getMessage());
+          }
+          return new MutableList(fields, env);
+        }
+      };
 
-  @SkylarkSignature(name = "type", returnType = String.class,
-      doc = "Returns the type name of its argument.",
-      mandatoryPositionals = {@Param(name = "x", doc = "The object to check type of.")})
-  private static final BuiltinFunction type = new BuiltinFunction("type") {
-    public String invoke(Object object) {
-      // There is no 'type' type in Skylark, so we return a string with the type name.
-      return EvalUtils.getDataTypeName(object, false);
-    }
-  };
+  @SkylarkSignature(
+    name = "type",
+    returnType = String.class,
+    doc =
+        "Returns the type name of its argument. This is useful for debugging and "
+            + "type-checking. Examples:"
+            + "<pre class=\"language-python\">"
+            + "type(2) == \"int\"\n"
+            + "type([1]) == \"list\"\n"
+            + "type(struct(a = 2)) == \"struct\""
+            + "</pre>"
+            + "This function might change in the future. To write Python-compatible code and "
+            + "be future-proof, use it only to compare return values: "
+            + "<pre class=\"language-python\">"
+            + "if type(x) == type([]):  # if x is a list"
+            + "</pre>",
+    parameters = {@Param(name = "x", doc = "The object to check type of.")}
+  )
+  private static final BuiltinFunction type =
+      new BuiltinFunction("type") {
+        public String invoke(Object object) {
+          // There is no 'type' type in Skylark, so we return a string with the type name.
+          return EvalUtils.getDataTypeName(object, false);
+        }
+      };
 
   @SkylarkSignature(
     name = "fail",
@@ -2153,14 +2184,12 @@ public class MethodLibrary {
         "Raises an error that cannot be intercepted. It can be used anywhere, "
             + "both in the loading phase and in the analysis phase.",
     returnType = Runtime.NoneType.class,
-    mandatoryPositionals = {
+    parameters = {
       @Param(
         name = "msg",
         type = Object.class,
         doc = "Error to display for the user. The object is converted to a string."
-      )
-    },
-    optionalPositionals = {
+      ),
       @Param(
         name = "attr",
         type = String.class,
@@ -2175,8 +2204,7 @@ public class MethodLibrary {
   )
   private static final BuiltinFunction fail =
       new BuiltinFunction("fail") {
-        public Runtime.NoneType invoke(Object msg, Object attr, Location loc)
-            throws EvalException, ConversionException {
+        public Runtime.NoneType invoke(Object msg, Object attr, Location loc) throws EvalException {
           String str = Printer.str(msg);
           if (attr != Runtime.NONE) {
             str = String.format("attribute %s: %s", attr, str);
@@ -2189,8 +2217,9 @@ public class MethodLibrary {
       doc = "Prints <code>args</code> as a warning. It can be used for debugging or "
           + "for transition (before changing to an error). In other cases, warnings are "
           + "discouraged.",
-      optionalNamedOnly = {
+      parameters = {
         @Param(name = "sep", type = String.class, defaultValue = "' '",
+            named = true, positional = false,
             doc = "The separator string between the objects, default is space (\" \").")},
       // NB: as compared to Python3, we're missing optional named-only arguments 'end' and 'file'
       extraPositionals = @Param(name = "args", doc = "The objects to print."),
@@ -2248,11 +2277,10 @@ public class MethodLibrary {
     }
   };
 
-  /**
-   * Skylark String module.
-   */
+  /** Skylark String module. */
   @SkylarkModule(
     name = "string",
+    category = SkylarkModuleCategory.BUILTIN,
     doc =
         "A language built-in type to support strings. "
             + "Examples of string literals:<br>"
@@ -2276,22 +2304,16 @@ public class MethodLibrary {
   static final class StringModule {}
 
 
-  static final List<BaseFunction> buildGlobalFunctions =
+  static final List<BaseFunction> defaultGlobalFunctions =
       ImmutableList.<BaseFunction>of(
-          all, any, bool, dict, enumerate, int_, len, list, max, min, minus, range, repr, reversed,
-          select, set, sorted, str, zip);
-
-  static final List<BaseFunction> skylarkGlobalFunctions =
-      ImmutableList.<BaseFunction>builder()
-          .addAll(buildGlobalFunctions)
-          .add(dir, fail, getattr, hasattr, print, struct, type)
-          .build();
+          all, any, bool, dict, dir, fail, getattr, hasattr, hash, enumerate, int_, len, list, max,
+          min, minus, print, range, repr, reversed, select, set, sorted, str, type, zip);
 
   /**
    * Collect global functions for the validation environment.
    */
   public static void setupValidationEnvironment(Set<String> builtIn) {
-    for (BaseFunction function : skylarkGlobalFunctions) {
+    for (BaseFunction function : defaultGlobalFunctions) {
       builtIn.add(function.getName());
     }
   }

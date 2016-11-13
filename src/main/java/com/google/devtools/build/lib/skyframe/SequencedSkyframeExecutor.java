@@ -44,8 +44,10 @@ import com.google.devtools.build.lib.skyframe.DirtinessCheckerUtils.BasicFilesys
 import com.google.devtools.build.lib.skyframe.DirtinessCheckerUtils.ExternalDirtinessChecker;
 import com.google.devtools.build.lib.skyframe.DirtinessCheckerUtils.MissingDiffDirtinessChecker;
 import com.google.devtools.build.lib.skyframe.DirtinessCheckerUtils.UnionDirtinessChecker;
+import com.google.devtools.build.lib.skyframe.ExternalFilesHelper.ExternalFileAction;
 import com.google.devtools.build.lib.skyframe.ExternalFilesHelper.ExternalFilesKnowledge;
 import com.google.devtools.build.lib.skyframe.ExternalFilesHelper.FileType;
+import com.google.devtools.build.lib.skyframe.PackageLookupFunction.CrossRepositoryLabelViolationStrategy;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.Preconditions;
@@ -65,7 +67,7 @@ import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
+import com.google.devtools.common.options.OptionsClassProvider;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -85,11 +87,6 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
 
   private static final Logger LOG = Logger.getLogger(SequencedSkyframeExecutor.class.getName());
 
-  /** Lower limit for number of loaded packages to consider clearing CT values. */
-  private int valueCacheEvictionLimit = -1;
-
-  /** Union of labels of loaded packages since the last eviction of CT values. */
-  private Set<PackageIdentifier> allLoadedPackages = ImmutableSet.of();
   private boolean lastAnalysisDiscarded = false;
 
   // Can only be set once (to false) over the lifetime of this object. If false, the graph will not
@@ -114,7 +111,8 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
       ImmutableList<PrecomputedValue.Injected> extraPrecomputedValues,
       Iterable<SkyValueDirtinessChecker> customDirtinessCheckers,
       PathFragment blacklistedPackagePrefixesFile,
-      String productName) {
+      String productName,
+      CrossRepositoryLabelViolationStrategy crossRepositoryLabelViolationStrategy) {
     super(
         evaluatorSupplier,
         pkgFactory,
@@ -126,9 +124,10 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
         preprocessorFactorySupplier,
         extraSkyFunctions,
         extraPrecomputedValues,
-        false,
+        ExternalFileAction.DEPEND_ON_EXTERNAL_PKG_FOR_EXTERNAL_REPO_PATHS,
         blacklistedPackagePrefixesFile,
-        productName);
+        productName,
+        crossRepositoryLabelViolationStrategy);
     this.diffAwarenessManager = new DiffAwarenessManager(diffAwarenessFactories);
     this.customDirtinessCheckers = customDirtinessCheckers;
   }
@@ -145,7 +144,8 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
       ImmutableMap<SkyFunctionName, SkyFunction> extraSkyFunctions,
       ImmutableList<PrecomputedValue.Injected> extraPrecomputedValues,
       Iterable<SkyValueDirtinessChecker> customDirtinessCheckers,
-      String productName) {
+      String productName,
+      CrossRepositoryLabelViolationStrategy crossRepositoryLabelViolationStrategy) {
     return create(
         pkgFactory,
         directories,
@@ -159,7 +159,8 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
         extraPrecomputedValues,
         customDirtinessCheckers,
         /*blacklistedPackagePrefixesFile=*/ PathFragment.EMPTY_FRAGMENT,
-        productName);
+        productName,
+        crossRepositoryLabelViolationStrategy);
   }
 
   private static SequencedSkyframeExecutor create(
@@ -175,7 +176,8 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
       ImmutableList<PrecomputedValue.Injected> extraPrecomputedValues,
       Iterable<SkyValueDirtinessChecker> customDirtinessCheckers,
       PathFragment blacklistedPackagePrefixesFile,
-      String productName) {
+      String productName,
+      CrossRepositoryLabelViolationStrategy crossRepositoryLabelViolationStrategy) {
     SequencedSkyframeExecutor skyframeExecutor =
         new SequencedSkyframeExecutor(
             InMemoryMemoizingEvaluator.SUPPLIER,
@@ -191,7 +193,8 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
             extraPrecomputedValues,
             customDirtinessCheckers,
             blacklistedPackagePrefixesFile,
-            productName);
+            productName,
+            crossRepositoryLabelViolationStrategy);
     skyframeExecutor.init();
     return skyframeExecutor;
   }
@@ -217,7 +220,8 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
         ImmutableList.<PrecomputedValue.Injected>of(),
         ImmutableList.<SkyValueDirtinessChecker>of(),
         blacklistedPackagePrefixesFile,
-        productName);
+        productName,
+        CrossRepositoryLabelViolationStrategy.ERROR);
   }
 
   @Override
@@ -255,14 +259,20 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
   }
 
   @Override
-  public void sync(EventHandler eventHandler, PackageCacheOptions packageCacheOptions,
-      Path outputBase, Path workingDirectory, String defaultsPackageContents, UUID commandId,
-      TimestampGranularityMonitor tsgm)
-          throws InterruptedException, AbruptExitException {
-    this.valueCacheEvictionLimit = packageCacheOptions.minLoadedPkgCountForCtNodeEviction;
+  public void sync(
+      EventHandler eventHandler,
+      PackageCacheOptions packageCacheOptions,
+      Path outputBase,
+      Path workingDirectory,
+      String defaultsPackageContents,
+      UUID commandId,
+      Map<String, String> clientEnv,
+      TimestampGranularityMonitor tsgm,
+      OptionsClassProvider options)
+      throws InterruptedException, AbruptExitException {
     super.sync(eventHandler, packageCacheOptions, outputBase, workingDirectory,
-        defaultsPackageContents, commandId, tsgm);
-    handleDiffs(eventHandler, packageCacheOptions.checkOutputFiles);
+        defaultsPackageContents, commandId, clientEnv, tsgm, options);
+    handleDiffs(eventHandler, packageCacheOptions.checkOutputFiles, options);
   }
 
   /**
@@ -317,11 +327,12 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
    */
   @VisibleForTesting
   public void handleDiffs(EventHandler eventHandler) throws InterruptedException {
-    handleDiffs(eventHandler, /*checkOutputFiles=*/ false);
+    handleDiffs(eventHandler, /*checkOutputFiles=*/false, OptionsClassProvider.EMPTY);
   }
 
-  private void handleDiffs(EventHandler eventHandler, boolean checkOutputFiles)
-      throws InterruptedException {
+  private void handleDiffs(
+      EventHandler eventHandler, boolean checkOutputFiles, OptionsClassProvider options)
+          throws InterruptedException {
     if (lastAnalysisDiscarded) {
       // Values were cleared last build, but they couldn't be deleted because they were needed for
       // the execution phase. We can delete them now.
@@ -336,7 +347,7 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
         pathEntriesWithoutDiffInformation = Sets.newHashSet();
     for (Path pathEntry : pkgLocator.get().getPathEntries()) {
       DiffAwarenessManager.ProcessableModifiedFileSet modifiedFileSet =
-          diffAwarenessManager.getDiff(eventHandler, pathEntry);
+          diffAwarenessManager.getDiff(eventHandler, pathEntry, options);
       if (modifiedFileSet.getModifiedFileSet().treatEverythingAsModified()) {
         pathEntriesWithoutDiffInformation.add(Pair.of(pathEntry, modifiedFileSet));
       } else {
@@ -411,8 +422,8 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
         externalFilesHelper.cloneWithFreshExternalFilesKnowledge();
     // See the comment for FileType.OUTPUT for why we need to consider output files here.
     EnumSet<FileType> fileTypesToCheck = checkOutputFiles
-        ? EnumSet.of(FileType.EXTERNAL_MUTABLE, FileType.EXTERNAL_REPO, FileType.OUTPUT)
-        : EnumSet.of(FileType.EXTERNAL_MUTABLE, FileType.EXTERNAL_REPO);
+        ? EnumSet.of(FileType.EXTERNAL, FileType.EXTERNAL_REPO, FileType.OUTPUT)
+        : EnumSet.of(FileType.EXTERNAL, FileType.EXTERNAL_REPO);
     Differencer.Diff diff =
         fsvc.getDirtyKeys(
             memoizingEvaluator.getValues(),
@@ -615,45 +626,6 @@ public final class SequencedSkyframeExecutor extends SkyframeExecutor {
       throw new IllegalStateException(e);
     } finally {
       progressReceiver.ignoreInvalidations = false;
-    }
-  }
-
-  /**
-   * Returns true if the old set of Packages is a subset or superset of the new one.
-   *
-   * <p>Compares the names of packages instead of the Package objects themselves (Package doesn't
-   * yet override #equals). Since packages store their names as a String rather than a Label, it's
-   * easier to use strings here.
-   */
-  @VisibleForTesting
-  static boolean isBuildSubsetOrSupersetOfPreviousBuild(Set<PackageIdentifier> oldPackages,
-      Set<PackageIdentifier> newPackages) {
-    if (newPackages.size() <= oldPackages.size()) {
-      return Sets.difference(newPackages, oldPackages).isEmpty();
-    } else if (oldPackages.size() < newPackages.size()) {
-      // No need to check for <= here, since the first branch does that already.
-      // If size(A) = size(B), then then A\B = 0 iff B\A = 0
-      return Sets.difference(oldPackages, newPackages).isEmpty();
-    } else {
-      return false;
-    }
-  }
-
-  @Override
-  public void updateLoadedPackageSet(Set<PackageIdentifier> loadedPackages) {
-    Preconditions.checkState(valueCacheEvictionLimit >= 0,
-        "should have called setMinLoadedPkgCountForCtValueEviction earlier");
-
-    // Make a copy to avoid nesting SetView objects. It also computes size(), which we need below.
-    Set<PackageIdentifier> union = ImmutableSet.copyOf(
-        Sets.union(allLoadedPackages, loadedPackages));
-
-    if (union.size() < valueCacheEvictionLimit
-        || isBuildSubsetOrSupersetOfPreviousBuild(allLoadedPackages, loadedPackages)) {
-      allLoadedPackages = union;
-    } else {
-      dropConfiguredTargets();
-      allLoadedPackages = loadedPackages;
     }
   }
 

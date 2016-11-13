@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
-import com.google.devtools.build.lib.analysis.TopLevelArtifactContext;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoFactory;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoFactory.BuildInfoKey;
@@ -33,10 +32,8 @@ import com.google.devtools.build.skyframe.Injectable;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
 import java.util.Map;
 import java.util.UUID;
-
 import javax.annotation.Nullable;
 
 /**
@@ -86,14 +83,14 @@ public final class PrecomputedValue implements SkyValue {
   static final Precomputed<UUID> BUILD_ID =
       new Precomputed<>(SkyKey.create(SkyFunctions.PRECOMPUTED, "build_id"));
 
+  static final Precomputed<Map<String, String>> CLIENT_ENV =
+      new Precomputed<>(SkyKey.create(SkyFunctions.PRECOMPUTED, "client_env"));
+
   static final Precomputed<WorkspaceStatusAction> WORKSPACE_STATUS_KEY =
       new Precomputed<>(SkyKey.create(SkyFunctions.PRECOMPUTED, "workspace_status_action"));
 
   static final Precomputed<ImmutableList<ActionAnalysisMetadata>> COVERAGE_REPORT_KEY =
       new Precomputed<>(SkyKey.create(SkyFunctions.PRECOMPUTED, "coverage_report_actions"));
-
-  static final Precomputed<TopLevelArtifactContext> TOP_LEVEL_CONTEXT =
-      new Precomputed<>(SkyKey.create(SkyFunctions.PRECOMPUTED, "top_level_context"));
 
   public static final Precomputed<Map<BuildInfoKey, BuildInfoFactory>> BUILD_INFO_FACTORIES =
       new Precomputed<>(SkyKey.create(SkyFunctions.PRECOMPUTED, "build_info_factories"));
@@ -142,7 +139,7 @@ public final class PrecomputedValue implements SkyValue {
     return "<BuildVariable " + value + ">";
   }
 
-  public static final void dependOnBuildId(SkyFunction.Environment env) {
+  public static void dependOnBuildId(SkyFunction.Environment env) throws InterruptedException {
     BUILD_ID.get(env);
   }
 
@@ -170,7 +167,7 @@ public final class PrecomputedValue implements SkyValue {
      */
     @Nullable
     @SuppressWarnings("unchecked")
-    public T get(SkyFunction.Environment env) {
+    public T get(SkyFunction.Environment env) throws InterruptedException {
       PrecomputedValue value = (PrecomputedValue) env.getValue(key);
       if (value == null) {
         return null;

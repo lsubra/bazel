@@ -14,7 +14,6 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.LabelConverter;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
@@ -25,7 +24,6 @@ import com.google.devtools.build.lib.rules.apple.DottedVersion;
 import com.google.devtools.build.lib.rules.apple.DottedVersionConverter;
 import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
 import com.google.devtools.common.options.Option;
-
 import java.util.List;
 
 /**
@@ -52,17 +50,39 @@ public class ObjcCommandLineOptions extends FragmentOptions {
           + "on the machine the simulator will be run on.")
   public String iosSimulatorDevice;
 
-  // Deprecated. See b/27942021 for more details.
   @Option(
-    name = "objc_generate_debug_symbols",
-    defaultValue = "false",
-    category = "flags",
-    deprecationWarning = "-g is enabled for all dbg builds."
-        + "Use --apple_generate_dsym flag for dSYM."
-        + "Use apple_generate_breakpad rule for breakpad.",
-    help = "Specifies whether to generate debug symbol(.dSYM) file."
+      name = "watchos_simulator_version",
+      defaultValue = "2.0",
+      category = "run",
+      converter = DottedVersionConverter.class,
+      help = "The version of watchOS to run on the simulator when running or testing."
   )
-  public boolean generateDebugSymbols;
+  public DottedVersion watchosSimulatorVersion;
+
+  @Option(name = "watchos_simulator_device",
+      defaultValue = "Apple Watch - 38mm",
+      category = "run",
+      help = "The device to simulate when running an watchOS application in the simulator, e.g. "
+          + "'Apple Watch - 38mm'. You can get a list of devices by running 'xcrun simctl list "
+          + "devicetypes' on the machine the simulator will be run on.")
+  public String watchosSimulatorDevice;
+
+  @Option(
+      name = "tvos_simulator_version",
+      defaultValue = "9.0",
+      category = "run",
+      converter = DottedVersionConverter.class,
+      help = "The version of tvOS to run on the simulator when running or testing."
+  )
+  public DottedVersion tvosSimulatorVersion;
+
+  @Option(name = "tvos_simulator_device",
+      defaultValue = "Apple TV 1080p",
+      category = "run",
+      help = "The device to simulate when running an tvOS application in the simulator, e.g. "
+          + "'Apple TV 1080p'. You can get a list of devices by running 'xcrun simctl list "
+          + "devicetypes' on the machine the simulator will be run on.")
+  public String tvosSimulatorDevice;
 
   @Option(name = "objc_generate_linkmap",
       defaultValue = "false",
@@ -76,15 +96,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
       category = "flags",
       help = "Additional options to pass to Objective C compilation.")
   public List<String> copts;
-
-  @Option(
-    name = "ios_minimum_os",
-    defaultValue = DEFAULT_MINIMUM_IOS,
-    category = "flags",
-    converter = DottedVersionConverter.class,
-    help = "Minimum compatible iOS version for target simulators and devices."
-  )
-  public DottedVersion iosMinimumOs;
 
   @Option(name = "ios_memleaks",
       defaultValue =  "false",
@@ -193,17 +204,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   )
   public Label extraEntitlements;
 
-  // TODO(b/28451644): Make this option the default behavior.
-  @Option(
-    name = "experimental_auto_top_level_union_objc_protos",
-    defaultValue = "false",
-    category = "flags",
-    help =
-        "Specifies whether to use the experimental proto generation scheme, in which they are all "
-            + "generated and linked into the final linking target."
-  )
-  public boolean experimentalAutoTopLevelUnionObjCProtos;
-
   @Option(
     name = "device_debug_entitlements",
     defaultValue = "true",
@@ -214,7 +214,29 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   )
   public boolean deviceDebugEntitlements;
 
-  @VisibleForTesting static final String DEFAULT_MINIMUM_IOS = "7.0";
+  @Option(
+    name = "experimental_objc_library",
+    defaultValue = "false",
+    category = "undocumented"
+  )
+  public boolean experimentalObjcLibrary;
+
+  @Option(
+    name = "experimental_objc_use_crosstool_for_binary",
+    defaultValue = "false",
+    category = "undocumented"
+  )
+  public boolean experimentalUseCrosstoolForBinary;
+  
+  @Option(
+    name = "objc_use_dotd_pruning",
+    defaultValue = "false",
+    category = "flags",
+    help =
+        "If set, .d files emited by clang will be used to prune the set of inputs passed into objc "
+            + "compiles."
+  )
+  public boolean useDotdPruning;
 
   @SuppressWarnings("unchecked")
   @Override
@@ -222,7 +244,7 @@ public class ObjcCommandLineOptions extends FragmentOptions {
     return ImmutableList.<SplitTransition<BuildOptions>>builder().add(
             IosApplication.SPLIT_ARCH_TRANSITION, IosExtension.MINIMUM_OS_AND_SPLIT_ARCH_TRANSITION,
             AppleWatch1Extension.MINIMUM_OS_AND_SPLIT_ARCH_TRANSITION)
-        .addAll(AppleBinary.SPLIT_TRANSITION_PROVIDER.getPotentialSplitTransitions())
+        .addAll(MultiArchSplitTransitionProvider.getPotentialSplitTransitions())
         .build();
   }
 }

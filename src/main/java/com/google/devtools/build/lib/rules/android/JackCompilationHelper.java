@@ -37,13 +37,11 @@ import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Map.Entry;
-
 import javax.annotation.Nullable;
 
 /**
@@ -280,7 +278,7 @@ public final class JackCompilationHelper {
     ruleContext.registerAction(
         new SpawnAction.Builder()
             .setExecutable(jackBinary)
-            .addInputs(transitiveJackLibraries)
+            .addTransitiveInputs(transitiveJackLibraries)
             .addInputs(proguardSpecs)
             .addInputs(manualMainDexList.asSet())
             .addOutput(outputZip)
@@ -298,7 +296,7 @@ public final class JackCompilationHelper {
    */
   public JackLibraryProvider compileAsNeverlinkLibrary() {
     JackLibraryProvider nonNeverlink = compileAsLibrary();
-    return new JackLibraryProvider(
+    return JackLibraryProvider.create(
         /* transitiveJackLibrariesToLink */
         NestedSetBuilder.<Artifact>emptySet(Order.NAIVE_LINK_ORDER),
         nonNeverlink.getTransitiveJackClasspathLibraries());
@@ -370,7 +368,7 @@ public final class JackCompilationHelper {
         .addAll(Iterables.transform(dexJars, nonLibraryFileConverter))
         .addTransitive(dexJacks);
 
-    alreadyCompiledLibrary = new JackLibraryProvider(dexContents.build(), exports.build());
+    alreadyCompiledLibrary = JackLibraryProvider.create(dexContents.build(), exports.build());
     return alreadyCompiledLibrary;
   }
 
@@ -523,9 +521,9 @@ public final class JackCompilationHelper {
     ruleContext.registerAction(
         new SpawnAction.Builder()
             .setExecutable(jackBinary)
-            .addInputs(classpathJackLibraries)
+            .addTransitiveInputs(classpathJackLibraries)
             .addOutput(outputArtifact)
-            .addInputs(processorClasspathJars)
+            .addTransitiveInputs(processorClasspathJars)
             .addInputs(resources.values())
             .addInputs(sourceJars)
             .addInputs(javaSources)

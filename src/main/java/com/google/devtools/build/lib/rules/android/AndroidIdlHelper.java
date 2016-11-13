@@ -30,7 +30,6 @@ import com.google.devtools.build.lib.rules.java.JavaUtil;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -38,7 +37,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 
 /**
@@ -104,6 +102,13 @@ public class AndroidIdlHelper {
         .add(AndroidIdlProvider.class, androidIdlProvider)
         .addOutputGroup(
             AndroidSemantics.IDL_JARS_OUTPUT_GROUP, androidIdlProvider.getTransitiveIdlJars());
+  }
+
+  /**
+   * Returns the root directory under which idl_srcs and idl_parcelables are located in this rule.
+   */
+  public String getIdlImportRoot() {
+    return hasExplicitlySpecifiedIdlImportRoot(ruleContext) ? getIdlImportRoot(ruleContext) : null;
   }
 
   /**
@@ -213,8 +218,7 @@ public class AndroidIdlHelper {
       PathFragment javaOutputPath = FileSystemUtils.replaceExtension(
           new PathFragment(ruleName + "_aidl").getRelative(idl.getRootRelativePath()),
           ".java");
-      Artifact output = ruleContext.getPackageRelativeArtifact(
-          javaOutputPath, ruleContext.getConfiguration().getGenfilesDirectory());
+      Artifact output = ruleContext.getGenfilesArtifact(javaOutputPath.getPathString());
       outputJavaSources.put(idl, output);
     }
     return outputJavaSources.build();
@@ -268,7 +272,9 @@ public class AndroidIdlHelper {
       Artifact idlClassJar,
       Artifact idlSourceJar) {
     String basename = FileSystemUtils.removeExtension(classJar.getExecPath().getBaseName());
-    PathFragment idlTempDir = ruleContext.getConfiguration().getBinDirectory().getExecPath()
+    PathFragment idlTempDir = ruleContext.getConfiguration()
+        .getBinDirectory(ruleContext.getRule().getRepository())
+        .getExecPath()
         .getRelative(ruleContext.getUniqueDirectory("_idl"))
         .getRelative(basename + "_temp");
     ruleContext.registerAction(new SpawnAction.Builder()
@@ -308,7 +314,7 @@ public class AndroidIdlHelper {
     ruleContext.registerAction(new SpawnAction.Builder()
         .setExecutable(sdk.getAidl())
         .addInput(idl)
-        .addInputs(idlImports)
+        .addTransitiveInputs(idlImports)
         .addInput(sdk.getFrameworkAidl())
         .addOutput(output)
         .addArgument("-b") // Fail if trying to compile a parcelable.
@@ -386,8 +392,8 @@ public class AndroidIdlHelper {
     }
     importsBuilder.addAll(idlImports);
 
-    return new AndroidIdlProvider(rootsBuilder.build(),
-        importsBuilder.build(), jarsBuilder.build());
+    return AndroidIdlProvider.create(
+        rootsBuilder.build(), importsBuilder.build(), jarsBuilder.build());
   }
 
   /**

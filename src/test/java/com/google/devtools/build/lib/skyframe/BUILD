@@ -1,3 +1,9 @@
+filegroup(
+    name = "srcs",
+    srcs = glob(["**"]),
+    visibility = ["//src/test/java/com/google/devtools/build/lib:__pkg__"],
+)
+
 java_library(
     name = "testutil",
     srcs = glob([
@@ -10,7 +16,6 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:bazel-rules",
         "//src/main/java/com/google/devtools/build/lib:build-base",
         "//src/main/java/com/google/devtools/build/lib:clock",
-        "//src/main/java/com/google/devtools/build/lib:cmdline",
         "//src/main/java/com/google/devtools/build/lib:collect",
         "//src/main/java/com/google/devtools/build/lib:concurrent",
         "//src/main/java/com/google/devtools/build/lib:events",
@@ -19,6 +24,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",
         "//src/test/java/com/google/devtools/build/lib:foundations_testutil",
@@ -35,9 +41,14 @@ java_library(
 
 java_test(
     name = "SkyframeTests",
-    srcs = glob([
-        "*.java",
-    ]),
+    srcs = select({
+        "//src:darwin": glob(["*.java"]),
+        "//src:darwin_x86_64": glob(["*.java"]),
+        "//conditions:default": glob(
+            ["*.java"],
+            exclude = ["MacOSXFsEventsDiffAwarenessTest.java"],
+        ),
+    }),
     tags = ["skyframe"],
     test_class = "com.google.devtools.build.lib.AllTests",
     deps = [
@@ -46,7 +57,6 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:bazel-rules",
         "//src/main/java/com/google/devtools/build/lib:build-base",
         "//src/main/java/com/google/devtools/build/lib:clock",
-        "//src/main/java/com/google/devtools/build/lib:cmdline",
         "//src/main/java/com/google/devtools/build/lib:collect",
         "//src/main/java/com/google/devtools/build/lib:concurrent",
         "//src/main/java/com/google/devtools/build/lib:events",
@@ -56,6 +66,7 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
         "//src/main/java/com/google/devtools/build/skyframe",
         "//src/test/java/com/google/devtools/build/lib:actions_testutil",

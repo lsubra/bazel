@@ -15,6 +15,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib:util",
         "//src/main/java/com/google/devtools/build/lib:vfs",
         "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/sandbox",
         "//src/main/java/com/google/devtools/build/lib/standalone",
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:worker_protocol_java_proto",
@@ -27,5 +28,6 @@ java_library(
 
 filegroup(
     name = "srcs",
+    testonly = 0,  # All srcs should be not test only, overwrite package default.
     srcs = glob(["**"]),
 )

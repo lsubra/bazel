@@ -16,27 +16,27 @@ package com.google.devtools.build.lib.syntax;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
-import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
 import com.google.devtools.build.lib.syntax.SkylarkMutable.MutableCollection;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.RandomAccess;
-
 import javax.annotation.Nullable;
 
-/**
- * A class to handle lists and tuples in Skylark.
- */
-@SkylarkModule(name = "sequence", documented = false,
-    doc = "common type of lists and tuples")
-  public abstract class SkylarkList<E>
-    extends MutableCollection<E> implements List<E>, RandomAccess {
+/** A class to handle lists and tuples in Skylark. */
+@SkylarkModule(
+  name = "sequence",
+  documented = false,
+  category = SkylarkModuleCategory.BUILTIN,
+  doc = "common type of lists and tuples"
+)
+public abstract class SkylarkList<E> extends MutableCollection<E> implements List<E>, RandomAccess,
+    SkylarkIndexable {
 
   /**
    * Returns an ImmutableList object with the current underlying contents of this SkylarkList.
@@ -122,6 +122,64 @@ import javax.annotation.Nullable;
     throw new UnsupportedOperationException();
   }
 
+  /**
+   * Retrieve an entry from a SkylarkList.
+   *
+   * @param key the index
+   * @param loc a {@link Location} in case of error
+   * @throws EvalException if the key is invalid
+   */
+  @Override
+  public final E getIndex(Object key, Location loc) throws EvalException {
+    List<E> list = getContentsUnsafe();
+    int index = MethodLibrary.getListIndex(key, list.size(), loc);
+    return list.get(index);
+  }
+
+  @Override
+  public final boolean containsKey(Object key, Location loc) throws EvalException {
+    for (Object obj : this) {
+      if (obj.equals(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Retrieve a sublist from a SkylarkList.
+   * @param start start value
+   * @param end end value
+   * @param step step value
+   * @param loc a {@link Location} in case of error
+   * @throws EvalException if the key is invalid
+   */
+  public List<E> getSlice(Object start, Object end, Object step, Location loc)
+      throws EvalException {
+    List<E> list = getContentsUnsafe();
+    int length = list.size();
+    ImmutableList.Builder<E> slice = ImmutableList.builder();
+    for (int pos : MethodLibrary.getSliceIndices(start, end, step, length, loc)) {
+      slice.add(list.get(pos));
+    }
+    return slice.build();
+  }
+
+  /**
+   * Put an entry into a SkylarkList.
+   * @param key the index
+   * @param value the associated value
+   * @param loc a {@link Location} in case of error
+   * @param env an {@link Environment}, to check Mutability
+   * @throws EvalException if the key is invalid
+   */
+  public void set(Object key, E value, Location loc, Environment env) throws EvalException {
+    checkMutable(loc, env);
+    List list = getContentsUnsafe();
+    int index = MethodLibrary.getListIndex(key, list.size(), loc);
+    list.set(index, value);
+  }
+
   // Other methods
   @Override
   public void write(Appendable buffer, char quotationMark) {
@@ -193,10 +251,16 @@ import javax.annotation.Nullable;
   }
 
   /**
-   * A class for mutable lists.
+   * Creates immutable SkylarkList with given elements.
    */
+  public static <E> SkylarkList<E> createImmutable(Iterable<? extends E> contents) {
+    return new MutableList<E>(contents, Mutability.IMMUTABLE);
+  }
+
+  /** A class for mutable lists. */
   @SkylarkModule(
     name = "list",
+    category = SkylarkModuleCategory.BUILTIN,
     doc =
         "A language built-in type to support lists. Example of list literal:<br>"
             + "<pre class=language-python>x = [1, 2, 3]</pre>"
@@ -231,13 +295,25 @@ import javax.annotation.Nullable;
      * @return a MutableList containing the elements
      */
     @SuppressWarnings("unchecked")
-    MutableList(Iterable<? extends E> contents, Mutability mutability) {
+    private MutableList(Iterable<? extends E> contents, Mutability mutability) {
       super();
       addAllUnsafe(contents);
       if (contents instanceof GlobList) {
         globList = (GlobList<E>) contents;
       }
       this.mutability = mutability;
+    }
+
+    /** Specialized constructor for concat. */
+    private MutableList(
+        MutableList<? extends E> lhs,
+        MutableList<? extends E> rhs,
+        @Nullable Environment env) {
+      super();
+      this.contents.ensureCapacity(lhs.size() + rhs.size());
+      this.contents.addAll(lhs);
+      this.contents.addAll(rhs);
+      this.mutability = env == null ? Mutability.IMMUTABLE : env.mutability();
     }
 
     /**
@@ -251,15 +327,6 @@ import javax.annotation.Nullable;
     }
 
     /**
-     * Creates a MutableList from contents.
-     * @param contents the contents of the list
-     * @return an actually immutable MutableList containing the elements
-     */
-    public MutableList(Iterable<? extends E> contents) {
-      this(contents, Mutability.IMMUTABLE);
-    }
-
-    /**
      * Creates a mutable or immutable MutableList depending on the given {@link Mutability}.
      */
     public MutableList(Mutability mutability) {
@@ -267,7 +334,7 @@ import javax.annotation.Nullable;
     }
 
     /**
-     * Builds a Skylark list (actually immutable) from a variable number of arguments.
+     * Builds a Skylark list from a variable number of arguments.
      * @param env an Environment from which to inherit Mutability, or null for immutable
      * @param contents the contents of the list
      * @return a Skylark list containing the specified arguments as elements.
@@ -334,7 +401,7 @@ import javax.annotation.Nullable;
         MutableList<? extends E> right,
         Environment env) {
       if (left.getGlobList() == null && right.getGlobList() == null) {
-        return new MutableList(Iterables.concat(left, right), env);
+        return new MutableList<>(left, right, env);
       }
       return new MutableList(GlobList.concat(
           left.getGlobListOrContentsUnsafe(), right.getGlobListOrContentsUnsafe()), env);
@@ -395,22 +462,16 @@ import javax.annotation.Nullable;
       return false;
     }
 
-    @Override
-    public boolean isImmutable() {
-      return false;
-    }
-
     /**
      * An empty IMMUTABLE MutableList.
      */
-    public static final MutableList EMPTY = new MutableList(Tuple.EMPTY);
+    public static final MutableList EMPTY = new MutableList(Tuple.EMPTY, Mutability.IMMUTABLE);
   }
 
-  /**
-   * An immutable tuple, e.g. in (1, 2, 3)
-   */
+  /** An immutable tuple, e.g. in (1, 2, 3) */
   @SkylarkModule(
     name = "tuple",
+    category = SkylarkModuleCategory.BUILTIN,
     doc =
         "A language built-in type to support tuples. Example of tuple literal:<br>"
             + "<pre class=language-python>x = (1, 2, 3)</pre>"
@@ -426,7 +487,6 @@ import javax.annotation.Nullable;
             + "('a', 'b', 'c', 'd')[3:0:-1]  # ('d', 'c', 'b')</pre>"
             + "Tuples are immutable, therefore <code>x[1] = \"a\"</code> is not supported."
   )
-  @Immutable
   public static final class Tuple<E> extends SkylarkList<E> {
 
     private final ImmutableList<E> contents;
@@ -475,6 +535,20 @@ import javax.annotation.Nullable;
      */
     public static <E> Tuple<E> of(E... elements) {
       return Tuple.create(ImmutableList.copyOf(elements));
+    }
+
+    /**
+     * Retrieve a sublist from a SkylarkList.
+     * @param start start value
+     * @param end end value
+     * @param step step value
+     * @param loc a {@link Location} in case of error
+     * @throws EvalException if the key is invalid
+     */
+    @Override
+    public final Tuple<E> getSlice(Object start, Object end, Object step, Location loc)
+        throws EvalException {
+      return copyOf(super.getSlice(start, end, step, loc));
     }
 
     @Override

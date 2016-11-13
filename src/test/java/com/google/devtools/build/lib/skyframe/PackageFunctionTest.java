@@ -24,7 +24,6 @@ import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
@@ -32,9 +31,11 @@ import com.google.devtools.build.lib.packages.ConstantRuleVisibility;
 import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.Preprocessor;
 import com.google.devtools.build.lib.packages.util.SubincludePreprocessor;
+import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.lib.testutil.ManualClock;
+import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.BlazeClock;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.Dirent;
@@ -51,18 +52,18 @@ import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.RecordingDifferencer;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-
+import com.google.devtools.common.options.Options;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
-
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests of specific functionality of PackageFunction. Note that it's already tested
@@ -74,10 +75,18 @@ public class PackageFunctionTest extends BuildViewTestCase {
   private CustomInMemoryFs fs = new CustomInMemoryFs(new ManualClock());
 
   private void preparePackageLoading(Path... roots) {
-    getSkyframeExecutor().preparePackageLoading(
-        new PathPackageLocator(outputBase, ImmutableList.copyOf(roots)),
-        ConstantRuleVisibility.PUBLIC, true,
-        7, "", UUID.randomUUID(), new TimestampGranularityMonitor(BlazeClock.instance()));
+    PackageCacheOptions packageCacheOptions = Options.getDefaults(PackageCacheOptions.class);
+    packageCacheOptions.defaultVisibility = ConstantRuleVisibility.PUBLIC;
+    packageCacheOptions.showLoadingProgress = true;
+    packageCacheOptions.globbingThreads = 7;
+    getSkyframeExecutor()
+        .preparePackageLoading(
+            new PathPackageLocator(outputBase, ImmutableList.copyOf(roots)),
+            packageCacheOptions,
+            "",
+            UUID.randomUUID(),
+            ImmutableMap.<String, String>of(),
+            new TimestampGranularityMonitor(BlazeClock.instance()));
   }
 
   @Override
@@ -99,6 +108,12 @@ public class PackageFunctionTest extends BuildViewTestCase {
     PackageValue value = result.get(skyKey);
     assertFalse(value.getPackage().containsErrors());
     return value;
+  }
+
+  @Test
+  public void testValidPackage() throws Exception {
+    scratch.file("pkg/BUILD");
+    validPackage(PackageValue.key(PackageIdentifier.parse("@//pkg")));
   }
 
   @Test
@@ -237,7 +252,6 @@ public class PackageFunctionTest extends BuildViewTestCase {
     Path bazDir = bazFile.getParentDirectory();
     Path barDir = bazDir.getParentDirectory();
 
-    long bazFileNodeId = bazFile.stat().getNodeId();
     // Our custom filesystem says "foo/bar/baz" does not exist but it also says that "foo/bar"
     // has a child directory "baz".
     fs.stubStat(bazDir, null);
@@ -250,9 +264,7 @@ public class PackageFunctionTest extends BuildViewTestCase {
             new Dirent("baz", Dirent.Type.DIRECTORY))));
     differencer.inject(ImmutableMap.of(DirectoryListingValue.key(barDirRootedPath), barDirListing));
     SkyKey skyKey = PackageValue.key(PackageIdentifier.parse("@//foo"));
-    String expectedMessage = "Some filesystem operations implied /workspace/foo/bar/baz/baz.sh was "
-        + "a regular file with size of 0 and mtime of 0 and nodeId of " + bazFileNodeId + " and "
-        + "mtime of 0 but others made us think it was a nonexistent path";
+    String expectedMessage = "/workspace/foo/bar/baz is no longer an existing directory";
     EvaluationResult<PackageValue> result = SkyframeExecutorTestUtils.evaluate(
         getSkyframeExecutor(), skyKey, /*keepGoing=*/false, reporter);
     assertTrue(result.hasError());
@@ -328,6 +340,135 @@ public class PackageFunctionTest extends BuildViewTestCase {
     value = validPackage(skyKey);
     assertThat(value.getPackage().getSubincludeLabels()).containsExactly(
         Label.parseAbsolute("//bar:a"), Label.parseAbsolute("//baz:c"));
+  }
+
+  @SuppressWarnings("unchecked") // Cast of srcs attribute to Iterable<Label>.
+  @Test
+  public void testGlobOrderStable() throws Exception {
+    scratch.file("foo/BUILD", "sh_library(name = 'foo', srcs = glob(['**/*.txt']))");
+    scratch.file("foo/b.txt");
+    scratch.file("foo/c/c.txt");
+    preparePackageLoading(rootDirectory);
+    SkyKey skyKey = PackageValue.key(PackageIdentifier.parse("@//foo"));
+    PackageValue value = validPackage(skyKey);
+    assertThat(
+            (Iterable<Label>)
+                value
+                    .getPackage()
+                    .getTarget("foo")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .containsExactly(
+            Label.parseAbsoluteUnchecked("//foo:b.txt"),
+            Label.parseAbsoluteUnchecked("//foo:c/c.txt"))
+        .inOrder();
+    scratch.file("foo/d.txt");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(new PathFragment("foo/d.txt")).build(),
+            rootDirectory);
+    value = validPackage(skyKey);
+    assertThat(
+            (Iterable<Label>)
+                value
+                    .getPackage()
+                    .getTarget("foo")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .containsExactly(
+            Label.parseAbsoluteUnchecked("//foo:b.txt"),
+            Label.parseAbsoluteUnchecked("//foo:c/c.txt"),
+            Label.parseAbsoluteUnchecked("//foo:d.txt"))
+        .inOrder();
+  }
+
+  @SuppressWarnings("unchecked") // Cast of srcs attribute to Iterable<Label>.
+  @Test
+  public void testGlobOrderStableWithLegacyAndSkyframeComponents() throws Exception {
+    scratch.file("foo/BUILD", "sh_library(name = 'foo', srcs = glob(['*.txt']))");
+    scratch.file("foo/b.txt");
+    scratch.file("foo/a.config");
+    preparePackageLoading(rootDirectory);
+    SkyKey skyKey = PackageValue.key(PackageIdentifier.parse("@//foo"));
+    PackageValue value = validPackage(skyKey);
+    assertThat(
+            (Iterable<Label>)
+                value
+                    .getPackage()
+                    .getTarget("foo")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .containsExactly(Label.parseAbsoluteUnchecked("//foo:b.txt"));
+    scratch.overwriteFile(
+        "foo/BUILD", "sh_library(name = 'foo', srcs = glob(['*.txt', '*.config']))");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(new PathFragment("foo/BUILD")).build(),
+            rootDirectory);
+    value = validPackage(skyKey);
+    assertThat(
+            (Iterable<Label>)
+                value
+                    .getPackage()
+                    .getTarget("foo")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .containsExactly(
+            Label.parseAbsoluteUnchecked("//foo:a.config"),
+            Label.parseAbsoluteUnchecked("//foo:b.txt"))
+        .inOrder();
+    scratch.overwriteFile(
+        "foo/BUILD", "sh_library(name = 'foo', srcs = glob(['*.txt', '*.config'])) # comment");
+    getSkyframeExecutor()
+        .invalidateFilesUnderPathForTesting(
+            reporter,
+            ModifiedFileSet.builder().modify(new PathFragment("foo/BUILD")).build(),
+            rootDirectory);
+    value = validPackage(skyKey);
+    assertThat(
+            (Iterable<Label>)
+                value
+                    .getPackage()
+                    .getTarget("foo")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .containsExactly(
+            Label.parseAbsoluteUnchecked("//foo:a.config"),
+            Label.parseAbsoluteUnchecked("//foo:b.txt"))
+        .inOrder();
+    getSkyframeExecutor().resetEvaluator();
+    PackageCacheOptions packageCacheOptions = Options.getDefaults(PackageCacheOptions.class);
+    packageCacheOptions.defaultVisibility = ConstantRuleVisibility.PUBLIC;
+    packageCacheOptions.showLoadingProgress = true;
+    packageCacheOptions.globbingThreads = 7;
+    getSkyframeExecutor()
+        .preparePackageLoading(
+            new PathPackageLocator(outputBase, ImmutableList.<Path>of(rootDirectory)),
+            packageCacheOptions,
+            "",
+            UUID.randomUUID(),
+            ImmutableMap.<String, String>of(),
+            tsgm);
+    value = validPackage(skyKey);
+    assertThat(
+            (Iterable<Label>)
+                value
+                    .getPackage()
+                    .getTarget("foo")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .containsExactly(
+            Label.parseAbsoluteUnchecked("//foo:a.config"),
+            Label.parseAbsoluteUnchecked("//foo:b.txt"))
+        .inOrder();
   }
 
   @Test
@@ -619,74 +760,255 @@ public class PackageFunctionTest extends BuildViewTestCase {
     }
   }
 
+  @Test
+  public void testGlobsHappenInParallel() throws Exception {
+    scratch.file(
+        "foo/BUILD",
+        "load('//foo:my_library.bzl', 'my_library')",
+        "[sh_library(name = x + '-matched') for x in glob(['bar/*'], exclude_directories = 0)]",
+        "cc_library(name = 'cc', srcs = glob(['cc/*']))",
+        "my_library(name = 'my', srcs = glob(['sh/*']))");
+    scratch.file(
+        "foo/my_library.bzl",
+        "def my_library(name = None, srcs = []):",
+        "  native.sh_library(name = name, srcs = srcs, deps = native.glob(['inner/*']))");
+    scratch.file("foo/bar/1");
+    Path barPath = scratch.file("foo/bar/2").getParentDirectory();
+    Path ccPath = scratch.file("foo/cc/src.file").getParentDirectory();
+    Path shPath = scratch.dir("foo/sh");
+    Path innerPath = scratch.dir("foo/inner");
+    PackageCacheOptions packageCacheOptions = Options.getDefaults(PackageCacheOptions.class);
+    packageCacheOptions.defaultVisibility = ConstantRuleVisibility.PUBLIC;
+    packageCacheOptions.showLoadingProgress = true;
+    packageCacheOptions.globbingThreads = 7;
+    packageCacheOptions.maxDirectoriesToEagerlyVisitInGlobbing = 10;
+    getSkyframeExecutor()
+        .preparePackageLoading(
+            new PathPackageLocator(outputBase, ImmutableList.of(rootDirectory)),
+            packageCacheOptions,
+            "",
+            UUID.randomUUID(),
+            ImmutableMap.<String, String>of(),
+            new TimestampGranularityMonitor(BlazeClock.instance()));
+
+    SkyKey skyKey = PackageValue.key(PackageIdentifier.parse("@//foo"));
+    final CountDownLatch allDirsRequested = new CountDownLatch(4);
+    Listener synchronizeListener =
+        new Listener() {
+          @Override
+          public Object accept(Path path, FileOp op, Order order) throws IOException {
+            if (op == FileOp.READDIR && order == Order.BEFORE) {
+              allDirsRequested.countDown();
+              try {
+                assertThat(
+                        allDirsRequested.await(
+                            TestUtils.WAIT_TIMEOUT_MILLISECONDS, TimeUnit.MILLISECONDS))
+                    .isTrue();
+              } catch (InterruptedException e) {
+                throw new IllegalStateException(e);
+              }
+            }
+            return NO_RESULT_MARKER;
+          }
+        };
+    fs.setCustomOverride(barPath, synchronizeListener);
+    fs.setCustomOverride(ccPath, synchronizeListener);
+    fs.setCustomOverride(shPath, synchronizeListener);
+    fs.setCustomOverride(innerPath, synchronizeListener);
+    PackageValue value = validPackage(skyKey);
+    assertFalse(value.getPackage().containsErrors());
+    assertThat(value.getPackage().getTarget("bar/1-matched").getName()).isEqualTo("bar/1-matched");
+    assertThat(value.getPackage().getTarget("cc/src.file")).isNotNull();
+    assertThat(
+            (Iterable<?>)
+                value
+                    .getPackage()
+                    .getTarget("my")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .isEmpty();
+  }
+
+  @Test
+  public void testGlobsDontHappenInParallel() throws Exception {
+    scratch.file(
+        "foo/BUILD",
+        "load('//foo:my_library.bzl', 'my_library')",
+        "[sh_library(name = x + '-matched') for x in glob(['bar/*'], exclude_directories = 0)]",
+        "cc_library(name = 'cc', srcs = glob(['cc/*']))",
+        "my_library(name = 'my', srcs = glob(['sh/*']))");
+    scratch.file(
+        "foo/my_library.bzl",
+        "def my_library(name = None, srcs = []):",
+        "  native.sh_library(name = name, srcs = srcs, deps = native.glob(['inner/*']))");
+    scratch.file("foo/bar/1");
+    Path barPath = scratch.file("foo/bar/2").getParentDirectory();
+    Path ccPath = scratch.file("foo/cc/src.file").getParentDirectory();
+    Path shPath = scratch.dir("foo/sh");
+    Path innerPath = scratch.dir("foo/inner");
+    PackageCacheOptions packageCacheOptions = Options.getDefaults(PackageCacheOptions.class);
+    packageCacheOptions.defaultVisibility = ConstantRuleVisibility.PUBLIC;
+    packageCacheOptions.showLoadingProgress = true;
+    packageCacheOptions.globbingThreads = 7;
+    packageCacheOptions.maxDirectoriesToEagerlyVisitInGlobbing = -1;
+    getSkyframeExecutor()
+        .preparePackageLoading(
+            new PathPackageLocator(outputBase, ImmutableList.of(rootDirectory)),
+            packageCacheOptions,
+            "",
+            UUID.randomUUID(),
+            ImmutableMap.<String, String>of(),
+            new TimestampGranularityMonitor(BlazeClock.instance()));
+
+    SkyKey skyKey = PackageValue.key(PackageIdentifier.parse("@//foo"));
+    final AtomicBoolean atLeastOneUnfinishedRequest = new AtomicBoolean(false);
+    final CountDownLatch allDirsRequested = new CountDownLatch(4);
+    Listener synchronizeListener =
+        new Listener() {
+          @Override
+          public Object accept(Path path, FileOp op, Order order) throws IOException {
+            if (op == FileOp.READDIR && order == Order.BEFORE) {
+              allDirsRequested.countDown();
+              try {
+                if (!allDirsRequested.await(1, TimeUnit.SECONDS)) {
+                  atLeastOneUnfinishedRequest.set(true);
+                }
+              } catch (InterruptedException e) {
+                throw new IllegalStateException(e);
+              }
+            }
+            return NO_RESULT_MARKER;
+          }
+        };
+    fs.setCustomOverride(barPath, synchronizeListener);
+    fs.setCustomOverride(ccPath, synchronizeListener);
+    fs.setCustomOverride(shPath, synchronizeListener);
+    fs.setCustomOverride(innerPath, synchronizeListener);
+    PackageValue value = validPackage(skyKey);
+    assertFalse(value.getPackage().containsErrors());
+    assertThat(value.getPackage().getTarget("bar/1-matched").getName()).isEqualTo("bar/1-matched");
+    assertThat(value.getPackage().getTarget("cc/src.file")).isNotNull();
+    assertThat(
+            (Iterable<?>)
+                value
+                    .getPackage()
+                    .getTarget("my")
+                    .getAssociatedRule()
+                    .getAttributeContainer()
+                    .getAttr("srcs"))
+        .isEmpty();
+    assertThat(atLeastOneUnfinishedRequest.get()).isTrue();
+  }
+
   private static class CustomInMemoryFs extends InMemoryFileSystem {
-    private abstract static class FileStatusOrException {
-      abstract FileStatus get() throws IOException;
-
-      private static class ExceptionImpl extends FileStatusOrException {
-        private final IOException exn;
-
-        private ExceptionImpl(IOException exn) {
-          this.exn = exn;
-        }
-
-        @Override
-        FileStatus get() throws IOException {
-          throw exn;
-        }
-      }
-
-      private static class FileStatusImpl extends FileStatusOrException {
-
-        @Nullable
-        private final FileStatus fileStatus;
-
-        private  FileStatusImpl(@Nullable FileStatus fileStatus) {
-          this.fileStatus = fileStatus;
-        }
-
-        @Override
-        @Nullable
-        FileStatus get() {
-          return fileStatus;
-        }
-      }
-    }
-
-    private Map<Path, FileStatusOrException> stubbedStats = Maps.newHashMap();
-    private Set<Path> makeUnreadableAfterReaddir = Sets.newHashSet();
+    private final Map<Path, Listener> customOverrides = Maps.newHashMap();
 
     public CustomInMemoryFs(ManualClock manualClock) {
       super(manualClock);
     }
 
-    public void stubStat(Path path, @Nullable FileStatus stubbedResult) {
-      stubbedStats.put(path, new FileStatusOrException.FileStatusImpl(stubbedResult));
+    public void stubStat(final Path targetPath, @Nullable final FileStatus stubbedResult) {
+      setCustomOverride(
+          targetPath,
+          new Listener() {
+            @Override
+            public Object accept(Path path, FileOp op, Order order) {
+              if (targetPath.equals(path) && op == FileOp.STAT && order == Order.BEFORE) {
+                return stubbedResult;
+              } else {
+                return NO_RESULT_MARKER;
+              }
+            }
+          });
     }
 
-    public void stubStatError(Path path, IOException stubbedResult) {
-      stubbedStats.put(path, new FileStatusOrException.ExceptionImpl(stubbedResult));
+    public void stubStatError(final Path targetPath, final IOException stubbedResult) {
+      setCustomOverride(
+          targetPath,
+          new Listener() {
+            @Override
+            public Object accept(Path path, FileOp op, Order order) throws IOException {
+              if (targetPath.equals(path) && op == FileOp.STAT && order == Order.BEFORE) {
+                throw stubbedResult;
+              } else {
+                return NO_RESULT_MARKER;
+              }
+            }
+          });
+    }
+
+    void setCustomOverride(Path path, Listener listener) {
+      customOverrides.put(path, listener);
     }
 
     @Override
     public FileStatus stat(Path path, boolean followSymlinks) throws IOException {
-      if (stubbedStats.containsKey(path)) {
-        return stubbedStats.get(path).get();
+      Listener listener = customOverrides.get(path);
+      if (listener != null) {
+        Object status = listener.accept(path, FileOp.STAT, Order.BEFORE);
+        if (status != NO_RESULT_MARKER) {
+          return (FileStatus) status;
+        }
       }
-      return super.stat(path, followSymlinks);
+      FileStatus fileStatus = super.stat(path, followSymlinks);
+      if (listener != null) {
+        Object status = listener.accept(path, FileOp.STAT, Order.AFTER);
+        if (status != NO_RESULT_MARKER) {
+          return (FileStatus) status;
+        }
+      }
+      return fileStatus;
     }
 
-    public void scheduleMakeUnreadableAfterReaddir(Path path) {
-      makeUnreadableAfterReaddir.add(path);
+    public void scheduleMakeUnreadableAfterReaddir(final Path targetPath) {
+      setCustomOverride(
+          targetPath,
+          new Listener() {
+            @Override
+            public Object accept(Path path, FileOp op, Order order) throws IOException {
+              if (targetPath.equals(path) && op == FileOp.READDIR && order == Order.AFTER) {
+                targetPath.setReadable(false);
+              }
+              return NO_RESULT_MARKER;
+            }
+          });
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     public Collection<Dirent> readdir(Path path, boolean followSymlinks) throws IOException {
+      Listener listener = customOverrides.get(path);
+      if (listener != null) {
+        Object status = listener.accept(path, FileOp.READDIR, Order.BEFORE);
+        if (status != NO_RESULT_MARKER) {
+          return (Collection<Dirent>) status;
+        }
+      }
       Collection<Dirent> result = super.readdir(path, followSymlinks);
-      if (makeUnreadableAfterReaddir.contains(path)) {
-        path.setReadable(false);
+      if (listener != null) {
+        Object status = listener.accept(path, FileOp.READDIR, Order.AFTER);
+        if (status != NO_RESULT_MARKER) {
+          return (Collection<Dirent>) status;
+        }
       }
       return result;
     }
+  }
+
+  private static final Object NO_RESULT_MARKER = new Object();
+
+  private enum Order {
+    BEFORE,
+    AFTER
+  }
+
+  private enum FileOp {
+    STAT,
+    READDIR
+  }
+
+  private interface Listener {
+    Object accept(Path path, FileOp op, Order order) throws IOException;
   }
 }

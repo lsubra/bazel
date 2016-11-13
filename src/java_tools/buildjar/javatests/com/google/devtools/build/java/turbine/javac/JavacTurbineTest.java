@@ -24,11 +24,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.io.ByteStreams;
+import com.google.devtools.build.buildjar.JarOwner;
 import com.google.devtools.build.java.turbine.TurbineOptions;
 import com.google.devtools.build.java.turbine.javac.JavacTurbine.Result;
 import com.google.devtools.build.lib.view.proto.Deps;
 import com.google.devtools.build.lib.view.proto.Deps.Dependency;
-
 import com.sun.source.tree.LiteralTree;
 import com.sun.source.util.JavacTask;
 import com.sun.source.util.TaskEvent;
@@ -39,17 +39,6 @@ import com.sun.tools.javac.api.ClientCodeWrapper.Trusted;
 import com.sun.tools.javac.api.JavacTool;
 import com.sun.tools.javac.file.JavacFileManager;
 import com.sun.tools.javac.util.Context;
-
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.util.Textifier;
-import org.objectweb.asm.util.TraceClassVisitor;
-
 import java.io.BufferedInputStream;
 import java.io.IOError;
 import java.io.IOException;
@@ -75,7 +64,6 @@ import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
-
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
@@ -88,6 +76,15 @@ import javax.tools.JavaFileManager;
 import javax.tools.JavaFileObject;
 import javax.tools.SimpleJavaFileObject;
 import javax.tools.StandardLocation;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.util.Textifier;
+import org.objectweb.asm.util.TraceClassVisitor;
 
 /** Unit tests for {@link JavacTurbine}. */
 @RunWith(JUnit4.class)
@@ -118,7 +115,7 @@ public class JavacTurbineTest {
         .addBootClassPathEntries(
             ImmutableList.copyOf(Splitter.on(':').split(System.getProperty("sun.boot.class.path"))))
         .setOutputDeps(outputDeps.toString())
-        .addAllJavacOpts(Arrays.asList("-source", "7", "-target", "7"))
+        .addAllJavacOpts(Arrays.asList("-source", "8", "-target", "8"))
         .setTargetLabel("//test")
         .setRuleKind("java_library");
   }
@@ -159,7 +156,7 @@ public class JavacTurbineTest {
 
     String text = textify(outputs.get("Hello.class"));
     String[] expected = {
-      "// class version 51.0 (51)",
+      "// class version 52.0 (52)",
       "// access flags 0x20",
       "class Hello {",
       "",
@@ -189,7 +186,7 @@ public class JavacTurbineTest {
 
     String text = textify(outputs.get("Hello.class"));
     String[] expected = {
-      "// class version 51.0 (51)",
+      "// class version 52.0 (52)",
       "// access flags 0x20",
       "class Hello {",
       "",
@@ -286,7 +283,7 @@ public class JavacTurbineTest {
     {
       String text = textify(outputs.get("Generated.class"));
       String[] expected = {
-        "// class version 51.0 (51)",
+        "// class version 52.0 (52)",
         "// access flags 0x21",
         "public class Generated {",
         "",
@@ -303,7 +300,7 @@ public class JavacTurbineTest {
     {
       String text = textify(outputs.get("Hello.class"));
       String[] expected = {
-        "// class version 51.0 (51)",
+        "// class version 52.0 (52)",
         "// access flags 0x20",
         "class Hello {",
         "",
@@ -350,30 +347,6 @@ public class JavacTurbineTest {
       };
 
   @Test
-  public void filterJavacopts() {
-    ImmutableList.Builder<String> output = ImmutableList.builder();
-    JavacTurbine.filterJavacopts(
-        output,
-        Arrays.asList(
-            "-g",
-            "-source",
-            "6",
-            "-target",
-            "6",
-            "-Xlint:all",
-            "-source",
-            "7",
-            "-target",
-            "7",
-            "-extra_checks:off",
-            "-Xep:GuardedBy:ERROR"));
-    assertThat(output.build())
-        .containsExactly(
-            "-g", "-source", "6", "-target", "6", "-Xlint:all", "-source", "7", "-target", "7")
-        .inOrder();
-  }
-
-  @Test
   public void jdeps() throws Exception {
 
     Path libC = temp.newFile("libc.jar").toPath();
@@ -409,9 +382,9 @@ public class JavacTurbineTest {
     optionsBuilder.addClassPathEntries(
         ImmutableList.of(libA.toString(), libB.toString(), libC.toString()));
     optionsBuilder.addAllDepsArtifacts(ImmutableList.of(depsA.toString()));
-    optionsBuilder.addDirectJarToTarget(libA.toString(), "//lib:a");
-    optionsBuilder.addDirectJarToTarget(libB.toString(), "//lib:b");
-    optionsBuilder.addIndirectJarToTarget(libC.toString(), "//lib:c");
+    optionsBuilder.addDirectJarToTarget(libA.toString(), JarOwner.create("//lib:a"));
+    optionsBuilder.addDirectJarToTarget(libB.toString(), JarOwner.create("//lib:b"));
+    optionsBuilder.addIndirectJarToTarget(libC.toString(), JarOwner.create("//lib:c"));
     optionsBuilder.setTargetLabel("//my:target");
 
     addSourceLines(
@@ -434,8 +407,8 @@ public class JavacTurbineTest {
         .containsExactlyEntriesIn(
             ImmutableMap.of(
                 libA.toString(), Deps.Dependency.Kind.EXPLICIT,
-                libB.toString(), Deps.Dependency.Kind.IMPLICIT,
-                libC.toString(), Deps.Dependency.Kind.IMPLICIT));
+                libB.toString(), Deps.Dependency.Kind.INCOMPLETE,
+                libC.toString(), Deps.Dependency.Kind.INCOMPLETE));
   }
 
   private Map<String, Deps.Dependency.Kind> getEntries(Deps.Dependencies deps) {
@@ -544,10 +517,10 @@ public class JavacTurbineTest {
     optionsBuilder.addClassPathEntries(
         ImmutableList.of(libA.toString(), libB.toString(), libC.toString(), libD.toString()));
     optionsBuilder.addAllDepsArtifacts(ImmutableList.of(depsA.toString()));
-    optionsBuilder.addDirectJarToTarget(libA.toString(), "//lib:a");
-    optionsBuilder.addIndirectJarToTarget(libB.toString(), "//lib:b");
-    optionsBuilder.addIndirectJarToTarget(libC.toString(), "//lib:c");
-    optionsBuilder.addIndirectJarToTarget(libD.toString(), "//lib:d");
+    optionsBuilder.addDirectJarToTarget(libA.toString(), JarOwner.create("//lib:a"));
+    optionsBuilder.addIndirectJarToTarget(libB.toString(), JarOwner.create("//lib:b"));
+    optionsBuilder.addIndirectJarToTarget(libC.toString(), JarOwner.create("//lib:c"));
+    optionsBuilder.addIndirectJarToTarget(libD.toString(), JarOwner.create("//lib:d"));
     optionsBuilder.setTargetLabel("//my:target");
 
     addSourceLines(
@@ -582,7 +555,7 @@ public class JavacTurbineTest {
                   libA.toString(),
                   Deps.Dependency.Kind.EXPLICIT,
                   libB.toString(),
-                  Deps.Dependency.Kind.IMPLICIT));
+                  Deps.Dependency.Kind.INCOMPLETE));
     }
   }
 
@@ -636,10 +609,10 @@ public class JavacTurbineTest {
     optionsBuilder.addClassPathEntries(
         ImmutableList.of(libA.toString(), libB.toString(), libC.toString(), libD.toString()));
     optionsBuilder.addAllDepsArtifacts(ImmutableList.of(depsA.toString()));
-    optionsBuilder.addDirectJarToTarget(libA.toString(), "//lib:a");
-    optionsBuilder.addIndirectJarToTarget(libB.toString(), "//lib:b");
-    optionsBuilder.addIndirectJarToTarget(libC.toString(), "//lib:c");
-    optionsBuilder.addIndirectJarToTarget(libD.toString(), "//lib:d");
+    optionsBuilder.addDirectJarToTarget(libA.toString(), JarOwner.create("//lib:a"));
+    optionsBuilder.addIndirectJarToTarget(libB.toString(), JarOwner.create("//lib:b"));
+    optionsBuilder.addIndirectJarToTarget(libC.toString(), JarOwner.create("//lib:c"));
+    optionsBuilder.addIndirectJarToTarget(libD.toString(), JarOwner.create("//lib:d"));
     optionsBuilder.setTargetLabel("//my:target");
 
     addSourceLines(
@@ -696,7 +669,7 @@ public class JavacTurbineTest {
 
     String text = textify(outputs.get("Const.class"));
     String[] expected = {
-      "// class version 51.0 (51)",
+      "// class version 52.0 (52)",
       "// access flags 0x20",
       "class Const {",
       "",
@@ -733,8 +706,7 @@ public class JavacTurbineTest {
   @Test
   public void constantsEnum() throws Exception {
     addSourceLines(
-        "TheEnum.java",
-        // TODO(cushon): fix google-java-format's handling of lists of string literals
+        "TheEnum.java", //
         "public enum TheEnum {",
         "  ONE, TWO, THREE;",
         "}");
@@ -746,7 +718,7 @@ public class JavacTurbineTest {
 
     String text = textify(outputs.get("TheEnum.class"));
     String[] expected = {
-      "// class version 51.0 (51)",
+      "// class version 52.0 (52)",
       "// access flags 0x4031",
       "// signature Ljava/lang/Enum<LTheEnum;>;",
       "// declaration: TheEnum extends java.lang.Enum<TheEnum>",
@@ -767,9 +739,6 @@ public class JavacTurbineTest {
       "",
       "  // access flags 0x9",
       "  public static valueOf(Ljava/lang/String;)LTheEnum;",
-      "",
-      "  // access flags 0x8",
-      "  static <clinit>()V",
       "}",
       ""
     };
@@ -862,7 +831,7 @@ public class JavacTurbineTest {
 
     String text = textify(outputs.get("Hello.class"));
     String[] expected = {
-      "// class version 51.0 (51)",
+      "// class version 52.0 (52)",
       "// access flags 0x20",
       "class Hello extends Super  {",
       "",
@@ -897,7 +866,7 @@ public class JavacTurbineTest {
 
     String text = textify(outputs.get("Hello.class"));
     String[] expected = {
-      "// class version 51.0 (51)",
+      "// class version 52.0 (52)",
       "// access flags 0x20",
       "class Hello {",
       "",
@@ -1018,12 +987,7 @@ public class JavacTurbineTest {
 
   @Test
   public void privateMembers() throws Exception {
-    addSourceLines(
-        "Hello.java",
-        "class Hello {",
-        "  private void f() {}",
-        "  private int x;",
-        "}");
+    addSourceLines("Hello.java", "class Hello {", "  private void f() {}", "  private int x;", "}");
 
     compile();
 
@@ -1033,7 +997,7 @@ public class JavacTurbineTest {
 
     String text = textify(outputs.get("Hello.class"));
     String[] expected = {
-      "// class version 51.0 (51)",
+      "// class version 52.0 (52)",
       "// access flags 0x20",
       "class Hello {",
       "",
@@ -1232,7 +1196,7 @@ public class JavacTurbineTest {
         "}");
 
     optionsBuilder.addClassPathEntries(Collections.singleton(deps.toString()));
-    optionsBuilder.addDirectJarToTarget(deps.toString(), "//deps");
+    optionsBuilder.addDirectJarToTarget(deps.toString(), JarOwner.create("//deps"));
 
     compile();
     Map<String, byte[]> outputs = collectOutputs();
@@ -1244,16 +1208,12 @@ public class JavacTurbineTest {
   @Test
   public void ignoreStrictDepsErrors() throws Exception {
 
-    Path lib = createClassJar("deps.jar",
-        JavacTurbineTest.class,
-        Lib.class);
+    Path lib = createClassJar("deps.jar", JavacTurbineTest.class, Lib.class);
 
     addSourceLines(
-        "Hello.java",
-        "import " + Lib.class.getCanonicalName() + ";",
-        "class Hello extends Lib {}");
+        "Hello.java", "import " + Lib.class.getCanonicalName() + ";", "class Hello extends Lib {}");
 
-    optionsBuilder.addIndirectJarToTarget(lib.toString(), "//lib");
+    optionsBuilder.addIndirectJarToTarget(lib.toString(), JarOwner.create("//lib"));
     optionsBuilder.addClassPathEntries(ImmutableList.of(lib.toString()));
 
     optionsBuilder.addSources(ImmutableList.copyOf(Iterables.transform(sources, TO_STRING)));
@@ -1266,5 +1226,75 @@ public class JavacTurbineTest {
     }
     assertThat(errOutput.toString()).contains("warning: [strict]");
     assertThat(result).isNotEqualTo(Result.OK_WITH_REDUCED_CLASSPATH);
+  }
+
+  @Test
+  public void clinit() throws Exception {
+    addSourceLines(
+        "Hello.java",
+        "class Hello {",
+        "  public static int x;",
+        "  static {",
+        "    x = 42;",
+        "  }",
+        "}");
+
+    compile();
+
+    Map<String, byte[]> outputs = collectOutputs();
+
+    assertThat(outputs.keySet()).containsExactly("Hello.class");
+
+    String text = textify(outputs.get("Hello.class"));
+    String[] expected = {
+      "// class version 52.0 (52)",
+      "// access flags 0x20",
+      "class Hello {",
+      "",
+      "",
+      "  // access flags 0x9",
+      "  public static I x",
+      "",
+      "  // access flags 0x0",
+      "  <init>()V",
+      "}",
+      ""
+    };
+    assertThat(text).isEqualTo(Joiner.on('\n').join(expected));
+  }
+
+  @Test
+  public void bridge() throws Exception {
+    addSourceLines(
+        "Bridge.java",
+        "import java.util.concurrent.Callable;",
+        "class Bridge implements Callable<String> {",
+        "  public String call() { return \"\"; }",
+        "}");
+
+    compile();
+
+    Map<String, byte[]> outputs = collectOutputs();
+
+    assertThat(outputs.keySet()).containsExactly("Bridge.class");
+
+    String text = textify(outputs.get("Bridge.class"));
+    String[] expected = {
+      "// class version 52.0 (52)",
+      "// access flags 0x20",
+      "// signature Ljava/lang/Object;Ljava/util/concurrent/Callable<Ljava/lang/String;>;",
+      "// declaration: Bridge implements java.util.concurrent.Callable<java.lang.String>",
+      "class Bridge implements java/util/concurrent/Callable  {",
+      "",
+      "",
+      "  // access flags 0x0",
+      "  <init>()V",
+      "",
+      "  // access flags 0x1",
+      "  public call()Ljava/lang/String;",
+      "}",
+      ""
+    };
+    assertThat(text).isEqualTo(Joiner.on('\n').join(expected));
   }
 }

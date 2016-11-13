@@ -39,8 +39,7 @@ def java_library_impl(ctx):
   javalist_output = class_jar.path + ".build_java_list"
   sources = ctx.files.srcs
 
-  sources_param_file = ctx.new_file(
-      ctx.configuration.bin_dir, class_jar, "-2.params")
+  sources_param_file = ctx.new_file(ctx.bin_dir, class_jar, "-2.params")
   ctx.file_action(
       output = sources_param_file,
       content = cmd_helper.join_paths("\n", set(sources)),
@@ -74,7 +73,7 @@ def java_library_impl(ctx):
     inputs = (sources + compile_time_jars_list + [sources_param_file] +
               [ctx.file._jar] + ctx.files._jdk + ctx.files.resources + ctx.files.srcjars),
     outputs = [class_jar],
-    mnemonic='Javac',
+    mnemonic='JavacBootstrap',
     command=cmd,
     use_default_shell_env=True)
 
@@ -182,7 +181,7 @@ java_library_attrs = {
     "_javac": attr.label(default=Label("//tools/jdk:javac"), single_file=True),
     "_jar": attr.label(default=Label("//tools/jdk:jar"), single_file=True),
     "_jdk": attr.label(default=Label("//tools/jdk:jdk"), allow_files=True),
-    "data": attr.label_list(allow_files=True, cfg=DATA_CFG),
+    "data": attr.label_list(allow_files=True, cfg="data"),
     "resources": attr.label_list(allow_files=True),
     "srcs": attr.label_list(allow_files=java_filetype),
     "jars": attr.label_list(allow_files=jar_filetype),

@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.syntax;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -21,18 +20,16 @@ import com.google.common.collect.Ordering;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkInterfaceUtils;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
-import com.google.devtools.build.lib.syntax.SkylarkList.Tuple;
 import com.google.devtools.build.lib.syntax.compiler.ByteCodeUtils;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
-import net.bytebuddy.implementation.bytecode.StackManipulation;
-
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
 
 /**
  * Utilities used by the evaluator.
@@ -122,17 +119,6 @@ public final class EvalUtils {
   // NB: This is used as the basis for accepting objects in SkylarkNestedSet-s,
   // as well as for accepting objects as keys for Skylark dict-s.
   public static boolean isImmutable(Object o) {
-    if (o instanceof Tuple) {
-      for (Object item : (Tuple) o) {
-        if (!isImmutable(item)) {
-          return false;
-        }
-      }
-      return true;
-    }
-    if (o instanceof SkylarkMutable) {
-      return false;
-    }
     if (o instanceof SkylarkValue) {
       return ((SkylarkValue) o).isImmutable();
     }
@@ -168,31 +154,6 @@ public final class EvalUtils {
         || c.equals(PathFragment.class); // other known class
   }
 
-  /**
-   * Returns a transitive superclass or interface implemented by c which is annotated
-   * with SkylarkModule. Returns null if no such class or interface exists.
-   */
-  @VisibleForTesting
-  static Class<?> getParentWithSkylarkModule(Class<?> c) {
-    if (c == null) {
-      return null;
-    }
-    if (c.isAnnotationPresent(SkylarkModule.class)) {
-      return c;
-    }
-    Class<?> parent = getParentWithSkylarkModule(c.getSuperclass());
-    if (parent != null) {
-      return parent;
-    }
-    for (Class<?> ifparent : c.getInterfaces()) {
-      ifparent = getParentWithSkylarkModule(ifparent);
-      if (ifparent != null) {
-        return ifparent;
-      }
-    }
-    return null;
-  }
-
   // TODO(bazel-team): move the following few type-related functions to SkylarkType
   /**
    * Return the Skylark-type of {@code c}
@@ -218,10 +179,7 @@ public final class EvalUtils {
     }
     // TODO(bazel-team): also unify all implementations of ClassObject,
     // that we used to all print the same as "struct"?
-    //
-    // Check if one of the superclasses or implemented interfaces has the SkylarkModule
-    // annotation. If yes return that class.
-    Class<?> parent = getParentWithSkylarkModule(c);
+    Class<?> parent = SkylarkInterfaceUtils.getParentWithSkylarkModule(c);
     if (parent != null) {
       return parent;
     }
@@ -269,9 +227,9 @@ public final class EvalUtils {
    * when the given class identifies a Skylark name space.
    */
   public static String getDataTypeNameFromClass(Class<?> c, boolean highlightNameSpaces) {
-    if (c.isAnnotationPresent(SkylarkModule.class)) {
-      SkylarkModule module = c.getAnnotation(SkylarkModule.class);
-      return c.getAnnotation(SkylarkModule.class).name()
+    SkylarkModule module = SkylarkInterfaceUtils.getSkylarkModule(c);
+    if (module != null) {
+      return module.name()
           + ((module.namespace() && highlightNameSpaces) ? " (a language module)" : "");
     } else if (c.equals(Object.class)) {
       return "unknown";
@@ -292,8 +250,6 @@ public final class EvalUtils {
     } else if (NestedSet.class.isAssignableFrom(c) || SkylarkNestedSet.class.isAssignableFrom(c)) {
       // TODO(bazel-team): no one should be seeing naked NestedSet at all.
       return "set";
-    } else if (ClassObject.SkylarkClassObject.class.isAssignableFrom(c)) {
-      return "struct";
     } else {
       if (c.getSimpleName().isEmpty()) {
         return c.getName();
@@ -382,6 +338,18 @@ public final class EvalUtils {
     } else {
       throw new EvalException(loc,
           "type '" + getDataTypeName(o) + "' is not iterable");
+    }
+  }
+
+  public static void lock(Object object, Location loc) {
+    if (object instanceof SkylarkMutable) {
+      ((SkylarkMutable) object).lock(loc);
+    }
+  }
+
+  public static void unlock(Object object, Location loc) {
+    if (object instanceof SkylarkMutable) {
+      ((SkylarkMutable) object).unlock(loc);
     }
   }
 

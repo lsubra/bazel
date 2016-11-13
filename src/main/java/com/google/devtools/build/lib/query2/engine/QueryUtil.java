@@ -14,11 +14,11 @@
 package com.google.devtools.build.lib.query2.engine;
 
 
-import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.MapMaker;
 import com.google.devtools.build.lib.collect.CompactHashSet;
-
+import java.util.Collections;
 import java.util.Set;
 
 /** Several query utilities to make easier to work with query callbacks and uniquifiers. */
@@ -26,89 +26,117 @@ public final class QueryUtil {
 
   private QueryUtil() { }
 
-  /** A callback that can aggregate all the partial results in one set */
-  public static class AggregateAllCallback<T> implements Callback<T> {
+  /** A {@link Callback} that can aggregate all the partial results into one set. */
+  public interface AggregateAllCallback<T> extends Callback<T> {
+    Set<T> getResult();
+  }
 
-    private final CompactHashSet<T> result = CompactHashSet.create();
+  /** A {@link OutputFormatterCallback} that can aggregate all the partial results into one set. */
+  public abstract static class AggregateAllOutputFormatterCallback<T>
+      extends OutputFormatterCallback<T> implements AggregateAllCallback<T>  {
+  }
+
+  private static class AggregateAllOutputFormatterCallbackImpl<T>
+      extends AggregateAllOutputFormatterCallback<T> {
+    private final Set<T> result = CompactHashSet.create();
 
     @Override
-    public void process(Iterable<T> partialResult) throws QueryException, InterruptedException {
+    public final void processOutput(Iterable<T> partialResult) {
       Iterables.addAll(result, partialResult);
     }
 
+    @Override
     public Set<T> getResult() {
       return result;
     }
+  }
 
-    @Override
-    public String toString() {
-      return "Aggregate all: " + result;
-    }
+  /**
+   * Returns a fresh {@link AggregateAllOutputFormatterCallback} that can aggregate all the partial
+   * results into one set.
+   *
+   * <p>Intended to be used by top-level evaluation of {@link QueryExpression}s; contrast with
+   * {@link #newAggregateAllCallback}.
+   */
+  public static <T> AggregateAllOutputFormatterCallback<T>
+      newAggregateAllOutputFormatterCallback() {
+    return new AggregateAllOutputFormatterCallbackImpl<>();
+  }
+
+  /**
+   * Returns a fresh {@link AggregateAllCallback}.
+   *
+   * <p>Intended to be used by {@link QueryExpression} implementations; contrast with
+   * {@link #newAggregateAllOutputFormatterCallback}.
+   */
+  public static <T> AggregateAllCallback<T> newAggregateAllCallback() {
+    return new AggregateAllOutputFormatterCallbackImpl<>();
   }
 
   /**
    * Fully evaluate a {@code QueryExpression} and return a set with all the results.
    *
-   * <p>Should ony be used by QueryExpressions when it is the only way of achieving correctness.
+   * <p>Should only be used by QueryExpressions when it is the only way of achieving correctness.
    */
-  public static <T> Set<T> evalAll(QueryEnvironment<T> env, QueryExpression expr)
-      throws QueryException, InterruptedException {
-    AggregateAllCallback<T> callback = new AggregateAllCallback<>();
-    env.eval(expr, callback);
-    return callback.result;
+  public static <T> Set<T> evalAll(
+      QueryEnvironment<T> env, VariableContext<T> context, QueryExpression expr)
+          throws QueryException, InterruptedException {
+    AggregateAllCallback<T> callback = newAggregateAllCallback();
+    env.eval(expr, context, callback);
+    return callback.getResult();
   }
 
-  /**
-   * Notify {@code parentCallback} only about the events that match {@code retainIfTrue} predicate.
-   *
-   * @param parentCallback The parent callback to notify with the matching elements
-   * @param retainIfTrue A predicate that defines what elements to notify to the parent callback.
-   */
-  public static <T> Callback<T> filteredCallback(final Callback<T> parentCallback,
-      final Predicate<T> retainIfTrue) {
-    return new Callback<T>() {
-      @Override
-      public void process(Iterable<T> partialResult) throws QueryException, InterruptedException {
-        Iterable<T> filter = Iterables.filter(partialResult, retainIfTrue);
-        if (!Iterables.isEmpty(filter)) {
-          parentCallback.process(filter);
-        }
-      }
-
-      @Override
-      public String toString() {
-        return "filtered parentCallback of : " + retainIfTrue;
-      }
-    };
-  }
-
-  /**
-   * An uniquifier that uses a CompactHashSet and a key extractor for making the elements unique.
-   *
-   * <p>Using a key extractor allows to improve memory since we don't have to keep the whole element
-   * in the set but just the key.
-   */
-  public abstract static class AbstractUniquifier<T, K> implements Uniquifier<T> {
-
+  /** A trivial {@link Uniquifier} base class. */
+  public abstract static class AbstractUniquifier<T, K>
+      extends AbstractUniquifierBase<T, K> {
     private final CompactHashSet<K> alreadySeen = CompactHashSet.create();
 
+    @Override
+    public final boolean unique(T element) {
+      return alreadySeen.add(extractKey(element));
+    }
+
+    /**
+     * Extracts an unique key that can be used to dedupe the given {@code element}.
+     *
+     * <p>Depending on the choice of {@code K}, this enables potential memory optimizations.
+     */
+    protected abstract K extractKey(T element);
+  }
+
+  /** A trivial {@link ThreadSafeUniquifier} base class. */
+  public abstract static class AbstractThreadSafeUniquifier<T, K>
+      extends AbstractUniquifierBase<T, K> implements ThreadSafeUniquifier<T> {
+    private final Set<K> alreadySeen;
+
+    protected AbstractThreadSafeUniquifier(int concurrencyLevel) {
+      this.alreadySeen = Collections.newSetFromMap(
+          new MapMaker().concurrencyLevel(concurrencyLevel).<K, Boolean>makeMap());
+    }
+
+    @Override
+    public final boolean unique(T element) {
+      return alreadySeen.add(extractKey(element));
+    }
+
+    /**
+     * Extracts an unique key that can be used to dedupe the given {@code element}.
+     *
+     * <p>Depending on the choice of {@code K}, this enables potential memory optimizations.
+     */
+    protected abstract K extractKey(T element);
+  }
+
+  private abstract static class AbstractUniquifierBase<T, K> implements Uniquifier<T> {
     @Override
     public final ImmutableList<T> unique(Iterable<T> newElements) {
       ImmutableList.Builder<T> result = ImmutableList.builder();
       for (T element : newElements) {
-        if (alreadySeen.add(extractKey(element))) {
+        if (unique(element)) {
           result.add(element);
         }
       }
       return result.build();
-    }
-
-    /** Extracts an unique key that represents the target. For example the label. */
-    protected abstract K extractKey(T t);
-
-    @Override
-    public String toString() {
-      return this.getClass().getName() + " uniquifier :" + alreadySeen;
     }
   }
 }

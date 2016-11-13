@@ -1,4 +1,4 @@
-#!/bin/bash -eu
+#!/bin/bash
 
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -13,6 +13,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+set -eu
 
 # Main deploy functions for the continous build system
 # Just source this file and use the various method:
@@ -36,8 +38,6 @@ source $(dirname ${SCRIPT_DIR})/release/common.sh
 
 : ${RELEASE_CANDIDATE_URL:="${GCS_BASE_URL}/${GCS_BUCKET}/%release_name%/rc%rc%/index.html"}
 : ${RELEASE_URL="${GIT_REPOSITORY_URL}/releases/tag/%release_name%"}
-
-set -eu
 
 PLATFORM="$(uname -s | tr 'A-Z' 'a-z')"
 if [[ ${PLATFORM} == "darwin" ]]; then
@@ -69,6 +69,9 @@ function setup_android_repositories() {
     cp WORKSPACE WORKSPACE.bak
     trap '[ -f WORKSPACE.bak ] && rm WORKSPACE && mv WORKSPACE.bak WORKSPACE' \
       EXIT
+    # Make sure that WORKSPACE ends with a newline, otherwise we'll end up with
+    # a syntax error.
+    echo >>WORKSPACE
     cat >>WORKSPACE <<EOF
 android_sdk_repository(
     name = "androidsdk",
@@ -139,7 +142,7 @@ function bazel_build() {
       --define JAVA_VERSION=${JAVA_VERSION} \
       ${ARGS} \
       //site:jekyll-tree \
-      //scripts/packages/... || exit $?
+      //scripts/packages || exit $?
 
   if [ -n "${1-}" ]; then
     # Copy the results to the output directory
@@ -148,6 +151,8 @@ function bazel_build() {
     cp bazel-bin/scripts/packages/install.sh $1/bazel-${release_label}-installer.sh
     if [ "$PLATFORM" = "linux" ]; then
       cp bazel-bin/scripts/packages/bazel-debian.deb $1/bazel_${release_label}.deb
+      cp -f bazel-genfiles/scripts/packages/bazel.dsc $1/bazel.dsc
+      cp -f bazel-genfiles/scripts/packages/bazel.tar.gz $1/bazel.tar.gz
     fi
     cp bazel-genfiles/site/jekyll-tree.tar $1/www.bazel.io.tar
     cp bazel-genfiles/scripts/packages/README.md $1/README.md
@@ -212,6 +217,16 @@ function release_to_github() {
   local release_name=$(get_release_name)
   local rc=$(get_release_candidate)
   local release_tool="${GITHUB_RELEASE:-$(which github-release 2>/dev/null || true)}"
+  local gpl_warning="
+
+_Notice_: Bazel installers contain binaries licensed under the GPLv2 with
+Classpath exception. Those installers should always be redistributed along with
+the source code.
+
+_Security_: All our binaries are signed with our
+[public key](https://bazel.io/bazel-release.pub.gpg).
+"
+
   if [ ! -x "${release_tool}" ]; then
     echo "Please set GITHUB_RELEASE to the path to the github-release binary." >&2
     echo "This probably means you haven't installed https://github.com/c4milo/github-release " >&2
@@ -222,7 +237,7 @@ function release_to_github() {
   if [ -n "${release_name}" ] && [ -z "${rc}" ]; then
     mkdir -p "${tmpdir}/to-github"
     cp "${@}" "${tmpdir}/to-github"
-    "${GITHUB_RELEASE}" "${github_repo}" "${release_name}" "" "# $(git_commit_msg)" "${tmpdir}/to-github/"'*'
+    "${GITHUB_RELEASE}" "${github_repo}" "${release_name}" "" "# $(git_commit_msg) ${gpl_warning}" "${tmpdir}/to-github/"'*'
   fi
 }
 
@@ -237,9 +252,13 @@ function create_index_md() {
   echo
   echo "## Index of files"
   echo
+  # Security notice
+  echo "_Security_: All our binaries are signed with our"
+  echo "[public key](https://bazel.io/bazel-release.pub.gpg)."
+  echo
   for f in $1/*.sha256; do  # just list the sha256 ones
     local filename=$(basename $f .sha256);
-    echo " - [${filename}](${filename}) [[SHA-256](${filename}.sha256)]"
+    echo " - [${filename}](${filename}) [[SHA-256](${filename}.sha256)] [[SIG](${filename}.sig)]"
   done
 }
 
@@ -298,13 +317,18 @@ function release_to_gcs() {
   fi
 }
 
+function ensure_gpg_secret_key_imported() {
+  (gpg --list-secret-keys | grep "${APT_GPG_KEY_ID}" > /dev/null) || \
+  gpg --allow-secret-key-import --import "${APT_GPG_KEY_PATH}"
+}
+
 function create_apt_repository() {
   mkdir conf
   cat > conf/distributions <<EOF
 Origin: Bazel Authors
 Label: Bazel
 Codename: stable
-Architectures: amd64
+Architectures: amd64 source
 Components: jdk1.7 jdk1.8
 Description: Bazel APT Repository
 DebOverride: override.stable
@@ -314,7 +338,7 @@ SignWith: ${APT_GPG_KEY_ID}
 Origin: Bazel Authors
 Label: Bazel
 Codename: testing
-Architectures: amd64
+Architectures: amd64 source
 Components: jdk1.7 jdk1.8
 Description: Bazel APT Repository
 DebOverride: override.testing
@@ -331,17 +355,22 @@ EOF
   touch conf/override.stable
   touch conf/override.testing
 
-  (gpg --list-keys | grep "${APT_GPG_KEY_ID}" > /dev/null) || \
-  gpg --allow-secret-key-import --import "${APT_GPG_KEY_PATH}"
+  ensure_gpg_secret_key_imported
 
   local distribution="$1"
   local deb_pkg_name_jdk8="$2"
   local deb_pkg_name_jdk7="$3"
+  local deb_dsc_name="$4"
+
+  debsign -k ${APT_GPG_KEY_ID} "${deb_dsc_name}"
+
   reprepro -C jdk1.8 includedeb "${distribution}" "${deb_pkg_name_jdk8}"
+  reprepro -C jdk1.8 includedsc "${distribution}" "${deb_dsc_name}"
   reprepro -C jdk1.7 includedeb "${distribution}" "${deb_pkg_name_jdk7}"
+  reprepro -C jdk1.7 includedsc "${distribution}" "${deb_dsc_name}"
 
   "${gs}" -m cp -a public-read -r dists "gs://${GCS_APT_BUCKET}/"
-  "${gs}" cp -a public-read -r pool "gs://${GCS_APT_BUCKET}/"
+  "${gs}" -m cp -a public-read -r pool "gs://${GCS_APT_BUCKET}/"
 }
 
 function release_to_apt() {
@@ -365,13 +394,17 @@ function release_to_apt() {
     local release_label="$(get_full_release_name)"
     local deb_pkg_name_jdk8="${release_name}/bazel_${release_label}-linux-x86_64.deb"
     local deb_pkg_name_jdk7="${release_name}/bazel_${release_label}-jdk7-linux-x86_64.deb"
+    local deb_dsc_name="${release_name}/bazel_$(get_release_name).dsc"
+    local deb_tar_name="${release_name}/bazel_$(get_release_name).tar.gz"
     cp "${tmpdir}/bazel_${release_label}-linux-x86_64.deb" "${dir}/${deb_pkg_name_jdk8}"
     cp "${tmpdir}/bazel_${release_label}-jdk7-linux-x86_64.deb" "${dir}/${deb_pkg_name_jdk7}"
+    cp "${tmpdir}/bazel.dsc" "${dir}/${deb_dsc_name}"
+    cp "${tmpdir}/bazel.tar.gz" "${dir}/${deb_tar_name}"
     cd "${dir}"
     if [ -n "${rc}" ]; then
-      create_apt_repository testing "${deb_pkg_name_jdk8}" "${deb_pkg_name_jdk7}"
+      create_apt_repository testing "${deb_pkg_name_jdk8}" "${deb_pkg_name_jdk7}" "${deb_dsc_name}"
     else
-      create_apt_repository stable "${deb_pkg_name_jdk8}" "${deb_pkg_name_jdk7}"
+      create_apt_repository stable "${deb_pkg_name_jdk8}" "${deb_pkg_name_jdk7}" "${deb_dsc_name}"
     fi
     cd "${prev_dir}"
     rm -fr "${dir}"
@@ -384,7 +417,7 @@ function deploy_release() {
   local github_args=()
   # Filters out README.md for github releases
   for i in "$@"; do
-    if ! [[ "$i" =~ README.md$ ]]; then
+    if ! ( [[ "$i" =~ README.md$ ]] || [[ "$i" =~ bazel.dsc ]] || [[ "$i" =~ bazel.tar.gz ]] ) ; then
       github_args+=("$i")
     fi
   done
@@ -395,6 +428,7 @@ function deploy_release() {
 
 # A wrapper for the whole release phase:
 #   Compute the SHA-256, and arrange the input
+#   Sign every binary using gpg and generating .sig files
 #   Deploy the release
 #   Generate the email
 # Input: $1 $2 [$3 $4 [$5 $6 ...]]
@@ -409,19 +443,26 @@ function bazel_release() {
   local README=$2/README.md
   tmpdir=$(mktemp -d ${TMPDIR:-/tmp}/tmp.XXXXXXXX)
   trap 'rm -fr ${tmpdir}' EXIT
+  ensure_gpg_secret_key_imported
+
   while (( $# > 1 )); do
     local platform=$1
     local folder=$2
     shift 2
     for file in $folder/*; do
-      if [ $(basename $file) != README.md ]; then
-        if [[ "$file" =~ /([^/]*)(\.[^\./]+)$ ]]; then
+      local filename=$(basename $file)
+      if [ "$filename" != README.md ]; then
+        if [ "$filename" == "bazel.dsc" ] || [ "$filename" == "bazel.tar.gz" ] ; then
+          local destfile=${tmpdir}/$filename
+        elif [[ "$file" =~ /([^/]*)(\.[^\./]+)$ ]]; then
           local destfile=${tmpdir}/${BASH_REMATCH[1]}-${platform}${BASH_REMATCH[2]}
         else
-          local destfile=${tmpdir}/$(basename $file)-${platform}
+          local destfile=${tmpdir}/$filename-${platform}
         fi
         mv $file $destfile
         checksum $destfile > $destfile.sha256
+        rm -f "$destfile.sig"
+        gpg --no-tty --detach-sign -u "${APT_GPG_KEY_ID}" "$destfile"
       fi
     done
   done
@@ -452,7 +493,10 @@ function build_and_publish_site() {
   fi
   tar xf "${site}" --exclude=CNAME -C "${tmpdir}"
   jekyll build -s "${tmpdir}" -d "${tmpdir}/production"
-  "${gs}" rsync -r "${tmpdir}/production" "gs://${bucket}"
+  # Rsync:
+  #   -r: recursive
+  #   -c: compute checksum even though the input is from the filesystem
+  "${gs}" rsync -r -c "${tmpdir}/production" "gs://${bucket}"
   "${gs}" web set -m index.html -e 404.html "gs://${bucket}"
   "${gs}" -m acl ch -R -u AllUsers:R "gs://${bucket}"
 }

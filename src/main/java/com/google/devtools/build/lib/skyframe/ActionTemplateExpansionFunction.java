@@ -23,10 +23,8 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.skyframe.ActionTemplateExpansionValue.ActionTemplateExpansionKey;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
-import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-
 import javax.annotation.Nullable;
 
 /**
@@ -40,12 +38,12 @@ public class ActionTemplateExpansionFunction implements SkyFunction {
 
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
-      throws ActionTemplateExpansionFunctionException {
+      throws ActionTemplateExpansionFunctionException, InterruptedException {
     ActionTemplateExpansionKey key = (ActionTemplateExpansionKey) skyKey.argument();
     SpawnActionTemplate actionTemplate = key.getActionTemplate();
 
     // Requests the TreeArtifactValue object for the input TreeArtifact.
-    SkyKey artifactValueKey = ArtifactValue.key(actionTemplate.getInputTreeArtifact(), true);
+    SkyKey artifactValueKey = ArtifactSkyKey.key(actionTemplate.getInputTreeArtifact(), true);
     TreeArtifactValue treeArtifactValue = (TreeArtifactValue) env.getValue(artifactValueKey);
 
     // Input TreeArtifact is not ready yet.

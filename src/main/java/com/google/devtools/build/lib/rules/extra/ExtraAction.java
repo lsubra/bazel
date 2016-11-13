@@ -39,12 +39,10 @@ import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
@@ -81,6 +79,7 @@ public final class ExtraAction extends SpawnAction {
       boolean createDummyOutput,
       CommandLine argv,
       Map<String, String> environment,
+      Set<String> clientEnvironmentVariables,
       Map<String, String> executionInfo,
       String progressMessage,
       String mnemonic) {
@@ -92,6 +91,7 @@ public final class ExtraAction extends SpawnAction {
         AbstractAction.DEFAULT_RESOURCE_SET,
         argv,
         ImmutableMap.copyOf(environment),
+        ImmutableSet.copyOf(clientEnvironmentVariables),
         ImmutableMap.copyOf(executionInfo),
         progressMessage,
         getManifests(shadowedAction),
@@ -127,7 +127,7 @@ public final class ExtraAction extends SpawnAction {
 
   @Nullable
   @Override
-  public Collection<Artifact> discoverInputs(ActionExecutionContext actionExecutionContext)
+  public Iterable<Artifact> discoverInputs(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
     Preconditions.checkState(discoversInputs(), this);
     // We need to update our inputs to take account of any additional
@@ -165,9 +165,11 @@ public final class ExtraAction extends SpawnAction {
 
   @Nullable
   @Override
-  public Iterable<Artifact> resolveInputsFromCache(ArtifactResolver artifactResolver,
-      PackageRootResolver resolver, Collection<PathFragment> inputPaths)
-          throws PackageRootResolutionException {
+  public Iterable<Artifact> resolveInputsFromCache(
+      ArtifactResolver artifactResolver,
+      PackageRootResolver resolver,
+      Collection<PathFragment> inputPaths)
+      throws PackageRootResolutionException, InterruptedException {
     // We update the inputs directly from the shadowed action.
     Set<PathFragment> extraActionPathFragments =
         ImmutableSet.copyOf(Artifact.asPathFragments(extraActionInputs));
@@ -216,8 +218,8 @@ public final class ExtraAction extends SpawnAction {
    */
   // TODO(bazel-team): Add more tests that execute this code path!
   @Override
-  public Spawn getSpawn() {
-    final Spawn base = super.getSpawn();
+  public Spawn getSpawn(Map<String, String> clientEnv) {
+    final Spawn base = super.getSpawn(clientEnv);
     return new DelegateSpawn(base) {
       @Override public ImmutableMap<PathFragment, Artifact> getRunfilesManifests() {
         ImmutableMap.Builder<PathFragment, Artifact> builder = ImmutableMap.builder();

@@ -27,13 +27,11 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
-
 import javax.annotation.Nullable;
 
 /**
@@ -136,12 +134,10 @@ public final class CustomCommandLine extends CommandLine {
     void eval(ImmutableList.Builder<String> builder, ArtifactExpander artifactExpander) {
       Set<Artifact> expandedArtifacts = new TreeSet<>();
       artifactExpander.expand(treeArtifact, expandedArtifacts);
-      Preconditions.checkState(
-          !expandedArtifacts.isEmpty(),
-          "%s expanded into nothing, maybe it's not added as a input for the associated action?",
-          treeArtifact);
 
-      builder.add(Artifact.joinExecPaths(delimiter, expandedArtifacts));
+      if (!expandedArtifacts.isEmpty()) {
+        builder.add(Artifact.joinExecPaths(delimiter, expandedArtifacts));
+      }
     }
 
     @Override
@@ -149,6 +145,34 @@ public final class CustomCommandLine extends CommandLine {
       return String.format(
           "JoinExpandedTreeArtifactExecPathsArg{ delimiter: %s, treeArtifact: %s}",
           delimiter,
+          treeArtifact.getExecPathString());
+    }
+  }
+
+  private static final class ExpandedTreeArtifactExecPathsArg
+      extends TreeArtifactExpansionArgvFragment {
+    private final Artifact treeArtifact;
+
+    private ExpandedTreeArtifactExecPathsArg(Artifact treeArtifact) {
+      Preconditions.checkArgument(
+          treeArtifact.isTreeArtifact(), "%s is not a TreeArtifact", treeArtifact);
+      this.treeArtifact = treeArtifact;
+    }
+
+    @Override
+    void eval(ImmutableList.Builder<String> builder, ArtifactExpander artifactExpander) {
+      Set<Artifact> expandedArtifacts = new TreeSet<>();
+      artifactExpander.expand(treeArtifact, expandedArtifacts);
+
+      for (Artifact expandedArtifact : expandedArtifacts) {
+        builder.add(expandedArtifact.getExecPathString());
+      }
+    }
+
+    @Override
+    public String describe() {
+      return String.format(
+          "ExpandedTreeArtifactExecPathsArg{ treeArtifact: %s}",
           treeArtifact.getExecPathString());
     }
   }
@@ -178,28 +202,22 @@ public final class CustomCommandLine extends CommandLine {
       extends TreeFileArtifactArgvFragment {
 
     private final String template;
-    private final Artifact[] placeHolderTreeArtifacts;
+    private final Artifact placeHolderTreeArtifact;
 
-    private TreeFileArtifactExecPathWithTemplateArg(
-        String template, Artifact... artifacts) {
-      for (Artifact artifact : artifacts) {
-        Preconditions.checkArgument(artifact.isTreeArtifact(), "%s must be a TreeArtifact",
-            artifact);
-      }
+    private TreeFileArtifactExecPathWithTemplateArg(String template, Artifact artifact) {
+      Preconditions.checkArgument(artifact.isTreeArtifact(), "%s must be a TreeArtifact",
+          artifact);
       this.template = template;
-      this.placeHolderTreeArtifacts = artifacts;
+      this.placeHolderTreeArtifact = artifact;
     }
 
     @Override
     ArgvFragment substituteTreeArtifact(Map<Artifact, TreeFileArtifact> substitutionMap) {
-      ImmutableList.Builder<PathFragment> argBuilder = ImmutableList.builder();
-      for (Artifact placeHolderTreeArtifact : placeHolderTreeArtifacts) {
-        Artifact artifact = substitutionMap.get(placeHolderTreeArtifact);
-        Preconditions.checkNotNull(artifact, "Artifact to substitute: %s", placeHolderTreeArtifact);
-        argBuilder.add(artifact.getExecPath());
-      }
-      return new PathWithTemplateArg(
-          template, argBuilder.build().toArray(new PathFragment[0]));
+      Artifact treeFileArtifact = substitutionMap.get(placeHolderTreeArtifact);
+      Preconditions.checkNotNull(treeFileArtifact, "Artifact to substitute: %s",
+          placeHolderTreeArtifact);
+
+      return new PathWithTemplateArg(template, treeFileArtifact.getExecPath());
     }
   }
 
@@ -384,14 +402,16 @@ public final class CustomCommandLine extends CommandLine {
     public Builder add(String arg, Iterable<String> args) {
       if (arg != null && args != null) {
         arguments.add(arg);
-        arguments.add(InterspersingArgs.fromStrings(args, /*beforeEach=*/null, "%s"));
+        arguments.add(
+            InterspersingArgs.fromStrings(args, /*beforeEach=*/ null, /*formatEach=*/ null));
       }
       return this;
     }
 
     public Builder add(Iterable<String> args) {
       if (args != null) {
-        arguments.add(InterspersingArgs.fromStrings(args, /*beforeEach=*/null, "%s"));
+        arguments.add(
+            InterspersingArgs.fromStrings(args, /*beforeEach=*/ null, /*formatEach=*/ null));
       }
       return this;
     }
@@ -407,42 +427,48 @@ public final class CustomCommandLine extends CommandLine {
     public Builder addExecPaths(String arg, Iterable<Artifact> artifacts) {
       if (arg != null && artifacts != null) {
         arguments.add(arg);
-        arguments.add(InterspersingArgs.fromExecPaths(artifacts, /*beforeEach=*/null, "%s"));
+        arguments.add(
+            InterspersingArgs.fromExecPaths(artifacts, /*beforeEach=*/ null, /*formatEach=*/ null));
       }
       return this;
     }
 
     public Builder addExecPaths(Iterable<Artifact> artifacts) {
       if (artifacts != null) {
-        arguments.add(InterspersingArgs.fromExecPaths(artifacts, /*beforeEach=*/null, "%s"));
+        arguments.add(
+            InterspersingArgs.fromExecPaths(artifacts, /*beforeEach=*/ null, /*formatEach=*/ null));
       }
       return this;
     }
 
     /**
-     * Adds a exec path flag of a {@link TreeFileArtifact} inside the given TreeArtifact.
+     * Adds a flag with the exec path of a placeholder TreeArtifact. When the command line is used
+     * in an action template, the placeholder will be replaced by the exec path of a
+     * {@link TreeFileArtifact} inside the TreeArtifact at execution time for each expanded action.
      *
      * @param arg the name of the argument
-     * @param artifact the TreeArtifact that will be evaluated to one of its child
+     * @param treeArtifact the TreeArtifact that will be evaluated to one of its child
      *     {@link TreeFileArtifact} at execution time
      */
-    public Builder addTreeFileArtifactExecPath(String arg, Artifact artifact) {
-      if (arg != null && artifact != null) {
+    public Builder addPlaceholderTreeArtifactExecPath(String arg, Artifact treeArtifact) {
+      if (arg != null && treeArtifact != null) {
         arguments.add(arg);
-        arguments.add(new TreeFileArtifactExecPathArg(artifact));
+        arguments.add(new TreeFileArtifactExecPathArg(treeArtifact));
       }
       return this;
     }
 
     /**
-     * Adds the exec path of a {@link TreeFileArtifact} inside the given TreeArtifact.
+     * Adds a placeholder TreeArtifact exec path. When the command line is used in an action
+     * template, the placeholder will be replaced by the exec path of a {@link TreeFileArtifact}
+     * inside the TreeArtifact at execution time for each expanded action.
      *
-     * @param artifact the TreeArtifact that will be evaluated to one of its child
+     * @param treeArtifact the TreeArtifact that will be evaluated to one of its child
      *     {@link TreeFileArtifact} at execution time
      */
-    public Builder addTreeFileArtifactExecPath(Artifact artifact) {
-      if (artifact != null) {
-        arguments.add(new TreeFileArtifactExecPathArg(artifact));
+    public Builder addPlaceholderTreeArtifactExecPath(Artifact treeArtifact) {
+      if (treeArtifact != null) {
+        arguments.add(new TreeFileArtifactExecPathArg(treeArtifact));
       }
       return this;
     }
@@ -478,16 +504,20 @@ public final class CustomCommandLine extends CommandLine {
     }
 
     /**
-     * Adds a formatted string containing the exec paths of {@link TreeFileArtifact}s inside the
-     * given TreeArtifacts.
+     * Adds a formatted string containing the exec path of a placeholder TreeArtifact. When the
+     * command line is used in an action template, the placeholder will be replaced by the exec path
+     * of a {@link TreeFileArtifact} inside the TreeArtifact at execution time for each expanded
+     * action.
      *
-     * @param template the string format template
-     * @param artifacts the TreeArtifact that will be evaluated to one of their child
+     * @param template the string format template containing a single string format specifier (%s)
+     *     to be replaced by the artifact exec path string.
+     * @param treeArtifact the TreeArtifact that will be evaluated to one of their child
      *     {@link TreeFileArtifact} at execution time
      */
-    public Builder addTreeFileArtifactExecPaths(String template, Artifact... artifacts) {
-      if (template != null && artifacts != null) {
-        arguments.add(new TreeFileArtifactExecPathWithTemplateArg(template, artifacts));
+    public Builder addPlaceholderTreeArtifactFormattedExecPath(
+        String template, Artifact treeArtifact) {
+      if (template != null && treeArtifact != null) {
+        arguments.add(new TreeFileArtifactExecPathWithTemplateArg(template, treeArtifact));
       }
       return this;
     }
@@ -511,23 +541,34 @@ public final class CustomCommandLine extends CommandLine {
       return this;
     }
 
+    /**
+     * Adds the exec paths (one argument per exec path) of all {@link TreeFileArtifact}s under
+     * {@code treeArtifact}.
+     *
+     * @param treeArtifact the TreeArtifact containing the {@link TreeFileArtifact}s to add.
+     */
+    public Builder addExpandedTreeArtifactExecPaths(Artifact treeArtifact) {
+      arguments.add(new ExpandedTreeArtifactExecPathsArg(treeArtifact));
+      return this;
+    }
+
     public Builder addBeforeEachPath(String repeated, Iterable<PathFragment> paths) {
       if (repeated != null && paths != null) {
-        arguments.add(InterspersingArgs.fromStrings(paths, repeated, "%s"));
+        arguments.add(InterspersingArgs.fromStrings(paths, repeated, /*formatEach=*/ null));
       }
       return this;
     }
 
     public Builder addBeforeEach(String repeated, Iterable<String> strings) {
       if (repeated != null && strings != null) {
-        arguments.add(InterspersingArgs.fromStrings(strings, repeated, "%s"));
+        arguments.add(InterspersingArgs.fromStrings(strings, repeated, /*formatEach=*/ null));
       }
       return this;
     }
 
     public Builder addBeforeEachExecPath(String repeated, Iterable<Artifact> artifacts) {
       if (repeated != null && artifacts != null) {
-        arguments.add(InterspersingArgs.fromExecPaths(artifacts, repeated, "%s"));
+        arguments.add(InterspersingArgs.fromExecPaths(artifacts, repeated, /*formatEach=*/ null));
       }
       return this;
     }

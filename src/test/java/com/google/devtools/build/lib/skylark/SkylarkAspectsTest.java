@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.skylark;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static com.google.devtools.build.lib.analysis.OutputGroupProvider.INTERNAL_SUFFIX;
 import static org.junit.Assert.fail;
 
 import com.google.common.base.Function;
@@ -29,6 +30,7 @@ import com.google.devtools.build.lib.analysis.SkylarkProviders;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.AspectDefinition;
 import com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition;
@@ -36,15 +38,12 @@ import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
 import com.google.devtools.build.lib.rules.java.Jvm;
 import com.google.devtools.build.lib.skyframe.AspectValue;
 import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
-
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import java.util.Arrays;
+import javax.annotation.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-
-import java.util.Arrays;
-
-import javax.annotation.Nullable;
 
 /**
  * Tests for Skylark aspects
@@ -54,6 +53,8 @@ public class SkylarkAspectsTest extends AnalysisTestCase {
   protected boolean keepGoing() {
     return false;
   }
+
+  private static final String LINE_SEPARATOR = System.lineSeparator();
 
   @Test
   public void testAspect() throws Exception {
@@ -252,7 +253,7 @@ public class SkylarkAspectsTest extends AnalysisTestCase {
     scratch.file(
         "test/aspect.bzl",
         "def _impl(target, ctx):",
-        "   f = target.output_group('_hidden_top_level')",
+        "   f = target.output_group('_hidden_top_level" + INTERNAL_SUFFIX + "')",
         "   return struct(output_groups = { 'my_result' : f })",
         "",
         "MyAspect = aspect(",
@@ -360,6 +361,43 @@ public class SkylarkAspectsTest extends AnalysisTestCase {
   }
 
   @Test
+  public void testAspectOnLabelAttr() throws Exception {
+    scratch.file(
+        "test/aspect.bzl",
+        "def _aspect_impl(target, ctx):",
+        "   return struct(aspect_data='foo')",
+        "",
+        "def _rule_impl(ctx):",
+        "   return struct(data=ctx.attr.attr.aspect_data)",
+        "",
+        "MyAspect = aspect(",
+        "   implementation=_aspect_impl,",
+        ")",
+        "my_rule = rule(",
+        "   implementation=_rule_impl,",
+        "   attrs = { 'attr' : ",
+        "             attr.label(aspects = [MyAspect]) },",
+        ")");
+
+    scratch.file(
+        "test/BUILD",
+        "load('/test/aspect', 'my_rule')",
+        "java_library(",
+        "     name = 'yyy',",
+        ")",
+        "my_rule(",
+        "     name = 'xxx',",
+        "     attr = ':yyy',",
+        ")");
+
+    AnalysisResult analysisResult = update("//test:xxx");
+    ConfiguredTarget target = analysisResult.getTargetsToBuild().iterator().next();
+    SkylarkProviders skylarkProviders = target.getProvider(SkylarkProviders.class);
+    Object value = skylarkProviders.getValue("data");
+    assertThat(value).isEqualTo("foo");
+  }
+
+  @Test
   public void testAspectsDoNotAttachToFiles() throws Exception {
     FileSystemUtils.appendIsoLatin1(scratch.resolve("WORKSPACE"),
         "bind(name = 'yyy', actual = '//test:zzz.jar')");
@@ -416,11 +454,16 @@ public class SkylarkAspectsTest extends AnalysisTestCase {
     assertContainsEvent(
         "ERROR /workspace/test/BUILD:1:1: in "
             + "//test:aspect.bzl%MyAspect aspect on java_library rule //test:xxx: \n"
-            + "Traceback (most recent call last):\n"
-            + "\tFile \"/workspace/test/BUILD\", line 1\n"
-            + "\t\t//test:aspect.bzl%MyAspect(...)\n"
-            + "\tFile \"/workspace/test/aspect.bzl\", line 2, in _impl\n"
-            + "\t\t1 / 0\n"
+            + "Traceback (most recent call last):"
+            + LINE_SEPARATOR
+            + "\tFile \"/workspace/test/BUILD\", line 1"
+            + LINE_SEPARATOR
+            + "\t\t//test:aspect.bzl%MyAspect(...)"
+            + LINE_SEPARATOR
+            + "\tFile \"/workspace/test/aspect.bzl\", line 2, in _impl"
+            + LINE_SEPARATOR
+            + "\t\t1 / 0"
+            + LINE_SEPARATOR
             + "integer division by zero");
   }
 
@@ -1026,6 +1069,110 @@ public class SkylarkAspectsTest extends AnalysisTestCase {
     }
   }
 
+  @Test
+  public void toplevelAspectOnFile() throws Exception {
+    scratch.file(
+        "test/aspect.bzl",
+        "def _impl(target, ctx):",
+        "   print('This aspect does nothing')",
+        "   return struct()",
+        "MyAspect = aspect(implementation=_impl)");
+    scratch.file("test/BUILD", "exports_files(['file.txt'])");
+    scratch.file("test/file.txt", "");
+    AnalysisResult analysisResult =
+        update(ImmutableList.of("test/aspect.bzl%MyAspect"), "//test:file.txt");
+    assertThat(analysisResult.hasError()).isFalse();
+    assertThat(analysisResult.getAspects()).isEmpty();
+  }
+
+  @Test
+  public void sharedAttributeDefintionWithAspects() throws Exception {
+    scratch.file(
+        "test/aspect.bzl",
+        "def _aspect_impl(target,ctx):",
+        "  return struct()",
+        "my_aspect = aspect(implementation = _aspect_impl)",
+        "_ATTR = { 'deps' : attr.label_list(aspects = [my_aspect]) }",
+        "def _dummy_impl(ctx):",
+        "  pass",
+        "r1 = rule(_dummy_impl, attrs =  _ATTR)",
+        "r2 = rule(_dummy_impl, attrs =  _ATTR)"
+    );
+
+    scratch.file(
+        "test/BUILD",
+        "load(':aspect.bzl', 'r1', 'r2')",
+        "r1(name = 't1')",
+        "r2(name = 't2', deps = [':t1'])"
+    );
+    AnalysisResult analysisResult = update("//test:t2");
+    assertThat(analysisResult.hasError()).isFalse();
+  }
+
+  @Test
+  public void multipleAspects() throws Exception {
+    scratch.file(
+        "test/aspect.bzl",
+        "def _aspect_impl(target,ctx):",
+        "  return struct()",
+        "my_aspect = aspect(implementation = _aspect_impl)",
+        "def _dummy_impl(ctx):",
+        "  pass",
+        "r1 = rule(_dummy_impl, ",
+        "          attrs = { 'deps' : attr.label_list(aspects = [my_aspect, my_aspect]) })"
+    );
+
+    scratch.file(
+        "test/BUILD",
+        "load(':aspect.bzl', 'r1')",
+        "r1(name = 't1')"
+    );
+    reporter.removeHandler(failFastHandler);
+    try {
+      AnalysisResult result = update("//test:r1");
+      assertThat(keepGoing()).isTrue();
+      assertThat(result.hasError()).isTrue();
+    } catch (TargetParsingException | ViewCreationFailedException expected) {
+      // expected.
+    }
+    assertContainsEvent("Aspect //test:aspect.bzl%my_aspect added more than once");
+  }
+
+  @Test
+  public void topLevelAspectsAndExtraActions() throws Exception {
+    scratch.file(
+        "test/aspect.bzl",
+        "def _aspect_impl(target,ctx):",
+        "  f = ctx.new_file('dummy.txt')",
+        "  ctx.action(outputs = [f], command='echo xxx > $(location f)', mnemonic='AspectAction')",
+        "  return struct()",
+        "my_aspect = aspect(implementation = _aspect_impl)"
+    );
+    scratch.file(
+        "test/BUILD",
+        "extra_action(",
+        "    name = 'xa',",
+        "    cmd = 'echo $(EXTRA_ACTION_FILE) > $(output file.xa)',",
+        "    out_templates = ['file.xa'],",
+        ")",
+        "action_listener(",
+        "    name = 'al',",
+        "    mnemonics = [ 'AspectAction' ],",
+        "    extra_actions = [ ':xa' ])",
+        "java_library(name = 'xxx')"
+    );
+    useConfiguration("--experimental_action_listener=//test:al");
+    AnalysisResult analysisResult = update(
+        ImmutableList.<String>of("test/aspect.bzl%my_aspect"),
+        "//test:xxx");
+    assertThat(Iterables.transform(analysisResult.getAdditionalArtifactsToBuild(),
+        new Function<Artifact, String>() {
+          @Override
+          public String apply(Artifact artifact) {
+            return artifact.getFilename();
+          }
+        })).contains("file.xa");
+  }
 
   @RunWith(JUnit4.class)
   public static final class WithKeepGoing extends SkylarkAspectsTest {

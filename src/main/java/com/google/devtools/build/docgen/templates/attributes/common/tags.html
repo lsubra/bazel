@@ -10,7 +10,7 @@
   <i>Tags</i> on non-test rules are used to control sandboxed execution of
   <code>genrule</code>s and
 
-<a href="/docs/skylark/index.html">Skylark</a>
+<a href="{{ page.version_prefix }}/docs/skylark/index.html">Skylark</a>
   actions, and for parsing by humans and/or external tools.
 </p>
 
@@ -29,8 +29,9 @@
     attribute has the same effect.
   </li>
 
-  <li><code>requires-network</code> keyword allows access to the external
-    network from inside the sandbox.
+  <li><code>block-network</code> keyword blocks access to the external
+    network from inside the sandbox. In this case, only communication
+    with localhost is allowed.
   </li>
 </ul>
 

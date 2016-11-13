@@ -30,7 +30,6 @@ import com.google.devtools.common.options.Converters.StringSetConverter;
 import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.TriState;
-
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -79,9 +78,7 @@ public class JavaOptions extends FragmentOptions {
     }
   }
 
-  /**
-   * Converter for the --experimental_java_classpath option.
-   */
+  /** Converter for the --java_classpath option. */
   public static class JavaClasspathModeConverter extends EnumConverter<JavaClasspathMode> {
     public JavaClasspathModeConverter() {
       super(JavaClasspathMode.class, "Java classpath reduction strategy");
@@ -167,19 +164,21 @@ public class JavaOptions extends FragmentOptions {
   public boolean useSourceIjars;
 
   @Option(
-    name = "experimental_java_header_compilation",
+    name = "java_header_compilation",
     defaultValue = "false",
-    category = "undocumented",
-    help = "Experimental: compile ijars directly from source."
+    category = "semantics",
+    help = "Compile ijars directly from source.",
+    oldName = "experimental_java_header_compilation"
   )
   public boolean headerCompilation;
 
-  @Deprecated
-  @Option(name = "experimental_incremental_ijars",
-      defaultValue = "false",
-      category = "undocumented",
-      help = "No-op. Kept here for backwards compatibility.")
-  public boolean incrementalIjars;
+  @Option(
+    name = "experimental_optimize_header_compilation_annotation_processing",
+    defaultValue = "false",
+    category = "undocumented",
+    help = "Experimental: only run api-generating java_plugins during header compilation."
+  )
+  public boolean optimizeHeaderCompilationAnnotationProcessing;
 
   @Option(name = "java_deps",
       defaultValue = "true",
@@ -187,20 +186,16 @@ public class JavaOptions extends FragmentOptions {
       help = "Generate dependency information (for now, compile-time classpath) per Java target.")
   public boolean javaDeps;
 
-  @Option(name = "experimental_java_deps",
-      defaultValue = "false",
-      category = "experimental",
-      expansion = "--java_deps",
-      deprecationWarning = "Use --java_deps instead")
-  public boolean experimentalJavaDeps;
-
-  @Option(name = "experimental_java_classpath",
-      allowMultiple = false,
-      defaultValue = "javabuilder",
-      converter = JavaClasspathModeConverter.class,
-      category = "semantics",
-      help = "Enables reduced classpaths for Java compilations.")
-  public JavaClasspathMode experimentalJavaClasspath;
+  @Option(
+    name = "java_classpath",
+    allowMultiple = false,
+    defaultValue = "javabuilder",
+    converter = JavaClasspathModeConverter.class,
+    category = "semantics",
+    help = "Enables reduced classpaths for Java compilations.",
+    oldName = "experimental_java_classpath"
+  )
+  public JavaClasspathMode javaClasspath;
 
   @Option(name = "java_debug",
       defaultValue = "null",
@@ -213,13 +208,17 @@ public class JavaOptions extends FragmentOptions {
       )
   public Void javaTestDebug;
 
-  @Option(name = "strict_java_deps",
-      allowMultiple = false,
-      defaultValue = "default",
-      converter = StrictDepsConverter.class,
-      category = "semantics",
-      help = "If true, checks that a Java target explicitly declares all directly used "
-          + "targets as dependencies.")
+  @Option(
+    name = "strict_java_deps",
+    allowMultiple = false,
+    defaultValue = "default",
+    converter = StrictDepsConverter.class,
+    category = "semantics",
+    help =
+        "If true, checks that a Java target explicitly declares all directly used "
+            + "targets as dependencies.",
+    oldName = "strict_android_deps"
+  )
   public StrictDepsMode strictJavaDeps;
 
   @Option(
@@ -287,12 +286,15 @@ public class JavaOptions extends FragmentOptions {
   )
   public Label hostJavaLauncher;
 
-  @Option(name = "java_launcher",
-      defaultValue = "null",
-      converter = LabelConverter.class,
-      category = "semantics",
-      help = "If enabled, a specific Java launcher is used. "
-          + "The \"launcher\" attribute overrides this flag. ")
+  @Option(
+    name = "java_launcher",
+    defaultValue = "null",
+    converter = LabelConverter.class,
+    category = "semantics",
+    help =
+        "The Java launcher to use when building Java binaries. "
+            + "The \"launcher\" attribute overrides this flag. "
+  )
   public Label javaLauncher;
 
   @Option(name = "proguard_top",
@@ -352,12 +354,24 @@ public class JavaOptions extends FragmentOptions {
       help = "Use the legacy mode of Bazel for java_test.")
   public boolean legacyBazelJavaTest;
 
+  @Option(
+    name = "strict_deps_java_protos",
+    defaultValue = "false",
+    category = "undocumented",
+    help =
+        "When 'strict-deps' is on, .java files that depend on classes not declared in their rule's "
+            + "'deps' fail to build. In other words, it's forbidden to depend on classes obtained "
+            + "transitively. When true, Java protos are strict regardless of their 'strict_deps' "
+            + "attribute."
+  )
+  public boolean strictDepsJavaProtos;
+
   @Override
   public FragmentOptions getHost(boolean fallback) {
     JavaOptions host = (JavaOptions) getDefault();
 
     host.javaBase = hostJavaBase;
-    host.jvmOpts = ImmutableList.of("-client", "-XX:ErrorFile=/dev/stderr");
+    host.jvmOpts = ImmutableList.of("-XX:ErrorFile=/dev/stderr");
 
     host.javacOpts = javacOpts;
     host.javaToolchain = hostJavaToolchain;
@@ -367,9 +381,12 @@ public class JavaOptions extends FragmentOptions {
     // Java builds often contain complicated code generators for which
     // incremental build performance is important.
     host.useIjars = useIjars;
+    host.headerCompilation = headerCompilation;
 
     host.javaDeps = javaDeps;
-    host.experimentalJavaClasspath = experimentalJavaClasspath;
+    host.javaClasspath = javaClasspath;
+
+    host.strictJavaDeps = strictJavaDeps;
 
     return host;
   }

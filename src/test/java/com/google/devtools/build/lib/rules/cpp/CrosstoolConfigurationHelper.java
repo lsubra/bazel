@@ -57,18 +57,13 @@ public class CrosstoolConfigurationHelper {
   }
 
   public static String defaultCpu() {
+    if (OS.getCurrent() == OS.WINDOWS) {
+      return "x64_windows";
+    }
     return OS.getCurrent() == OS.DARWIN ? "darwin" : "k8";
   }
 
-  /**
-   * Overwrites the default CROSSTOOL file with a reasonable toolchain.
-   */
-  public static void overwriteCrosstoolWithSimpleCompleteToolchain(Path workspace)
-      throws IOException {
-    overwriteCrosstoolFile(workspace, TextFormat.printToString(simpleCompleteToolchainProto()));
-  }
-
-  private static CrosstoolConfig.CrosstoolRelease simpleCompleteToolchainProto() {
+  public static CrosstoolConfig.CrosstoolRelease simpleCompleteToolchainProto() {
     CrosstoolConfig.CrosstoolRelease.Builder builder =
         CrosstoolConfig.CrosstoolRelease.newBuilder()
             .setMajorVersion("12")

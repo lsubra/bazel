@@ -36,12 +36,13 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.events.OutputFilter.RegexOutputFilter;
 import com.google.devtools.build.lib.packages.AspectDefinition;
 import com.google.devtools.build.lib.packages.AspectParameters;
 import com.google.devtools.build.lib.packages.NativeAspectClass;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
-
+import java.util.regex.Pattern;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -57,6 +58,46 @@ public class AspectTest extends AnalysisTestCase {
 
   private void pkg(String name, String... contents) throws Exception {
     scratch.file("" + name + "/BUILD", contents);
+  }
+
+  @Test
+  public void testAspectAppliedToAliasWithSelect() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(), new AspectRequiringRule());
+    pkg("a",
+        "aspect(name='a', foo=[':b'])",
+        "alias(name='b', actual=select({'//conditions:default': ':c'}))",
+        "base(name='c')");
+    ConfiguredTarget a = getConfiguredTarget("//a:a");
+    assertThat(a.getProvider(RuleInfo.class).getData())
+        .containsExactly("aspect //a:c", "rule //a:a");
+  }
+
+  @Test
+  public void testAspectAppliedToChainedAliases() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(), new AspectRequiringRule());
+    pkg("a",
+        "aspect(name='a', foo=[':b'])",
+        "alias(name='b', actual=':c')",
+        "alias(name='c', actual=':d')",
+        "alias(name='d', actual=':e')",
+        "base(name='e')");
+
+    ConfiguredTarget a = getConfiguredTarget("//a:a");
+    assertThat(a.getProvider(RuleInfo.class).getData())
+        .containsExactly("aspect //a:e", "rule //a:a");
+  }
+
+  @Test
+  public void testAspectAppliedToChainedAliasesAndSelect() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(), new AspectRequiringRule());
+    pkg("a",
+        "aspect(name='a', foo=[':b'])",
+        "alias(name='b', actual=select({'//conditions:default': ':c'}))",
+        "alias(name='c', actual=select({'//conditions:default': ':d'}))",
+        "base(name='d')");
+    ConfiguredTarget a = getConfiguredTarget("//a:a");
+    assertThat(a.getProvider(RuleInfo.class).getData())
+        .containsExactly("aspect //a:d", "rule //a:a");
   }
 
   @Test
@@ -184,6 +225,47 @@ public class AspectTest extends AnalysisTestCase {
       // expected
     }
     assertContainsEvent("Aspect error");
+  }
+
+  @Test
+  public void aspectDependenciesDontShowDeprecationWarnings() throws Exception {
+    setRulesAvailableInTests(
+        new TestAspects.BaseRule(), new TestAspects.ExtraAttributeAspectRule());
+
+    pkg("extra", "base(name='extra', deprecation='bad aspect')");
+
+    pkg("a",
+        "rule_with_extra_deps_aspect(name='a', foo=[':b'])",
+        "base(name='b')");
+
+    getConfiguredTarget("//a:a");
+    assertContainsEventWithFrequency("bad aspect", 0);
+  }
+
+  @Test
+  public void ruleDependencyDeprecationWarningsAbsentDuringAspectEvaluations() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(), new TestAspects.AspectRequiringRule());
+
+    pkg("a", "aspect(name='a', foo=['//b:b'])");
+    pkg("b", "aspect(name='b', bar=['//d:d'])");
+    pkg("d", "base(name='d', deprecation='bad rule')");
+
+    getConfiguredTarget("//a:a");
+    assertContainsEventWithFrequency("bad rule", 1);
+  }
+
+  @Test
+  public void aspectWarningsFilteredByOutputFiltersForAssociatedRules() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(), new TestAspects.WarningAspectRule());
+    pkg("a", "warning_aspect(name='a', foo=['//b:b', '//c:c'])");
+    pkg("b", "base(name='b')");
+    pkg("c", "base(name='c')");
+
+    reporter.setOutputFilter(RegexOutputFilter.forPattern(Pattern.compile("^//b:")));
+
+    getConfiguredTarget("//a:a");
+    assertContainsEventWithFrequency("Aspect warning on //b:b", 1);
+    assertContainsEventWithFrequency("Aspect warning on //c:c", 0);
   }
 
   @Test
@@ -343,15 +425,80 @@ public class AspectTest extends AnalysisTestCase {
         a.getProvider(ExtraActionArtifactsProvider.class)
             .getTransitiveExtraActionArtifacts();
     assertThat(getOnlyElement(extraActionArtifacts).getLabel()).isEqualTo(Label.create("@//a", "b"));
-
   }
 
-  @RunWith(JUnit4.class)
-  public static class AspectTestWithoutLoading extends AspectTest {
+  @Test
+  public void aspectPropagatesToAllAttributes() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(),
+        new TestAspects.SimpleRule(),
+        new TestAspects.AllAttributesAspectRule());
+    pkg("a",
+        "simple(name='a', foo=[':b'], foo1=':c', txt='some text')",
+        "simple(name='b', foo=[], txt='some text')",
+        "simple(name='c', foo=[], txt='more text')",
+        "all_attributes_aspect(name='x', foo=[':a'])");
 
-    @Override
-    protected boolean isLoadingEnabled() {
-      return false;
-    }
+    ConfiguredTarget a = getConfiguredTarget("//a:x");
+    assertThat(a.getProvider(RuleInfo.class).getData())
+        .containsExactly("aspect //a:a",  "aspect //a:b", "aspect //a:c", "rule //a:x");
   }
+
+  @Test
+  public void aspectPropagatesToAllAttributesImplicit() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(),
+        new TestAspects.SimpleRule(),
+        new TestAspects.ImplicitDepRule(),
+        new TestAspects.AllAttributesAspectRule());
+
+    scratch.file(
+        "extra/BUILD",
+        "simple(name ='extra')"
+    );
+    pkg("a",
+        "simple(name='a', foo=[':b'], foo1=':c', txt='some text')",
+        "simple(name='b', foo=[], txt='some text')",
+        "implicit_dep(name='c')",
+        "all_attributes_aspect(name='x', foo=[':a'])");
+    update();
+
+    ConfiguredTarget a = getConfiguredTarget("//a:x");
+    assertThat(a.getProvider(RuleInfo.class).getData())
+        .containsExactly(
+            "aspect //a:a",
+            "aspect //a:b",
+            "aspect //a:c",
+            "aspect //extra:extra",
+            "rule //a:x");
+  }
+
+
+  @Test
+  public void aspectPropagatesToAllAttributesLateBound() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(),
+        new TestAspects.SimpleRule(),
+        new TestAspects.LateBoundDepRule(),
+        new TestAspects.AllAttributesAspectRule());
+
+    scratch.file(
+        "extra/BUILD",
+        "simple(name ='extra')"
+    );
+    pkg("a",
+        "simple(name='a', foo=[':b'], foo1=':c', txt='some text')",
+        "simple(name='b', foo=[], txt='some text')",
+        "late_bound_dep(name='c')",
+        "all_attributes_aspect(name='x', foo=[':a'])");
+    useConfiguration("--plugin=//extra:extra");
+    update();
+
+    ConfiguredTarget a = getConfiguredTarget("//a:x");
+    assertThat(a.getProvider(RuleInfo.class).getData())
+        .containsExactly(
+            "aspect //a:a",
+            "aspect //a:b",
+            "aspect //a:c",
+            "aspect //extra:extra",
+            "rule //a:x");
+  }
+
 }

@@ -27,12 +27,15 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.io.Flushables;
+import com.google.devtools.build.lib.buildeventstream.BuildEventTransport;
+import com.google.devtools.build.lib.buildeventstream.transports.TextFormatFileTransport;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.flags.InvocationPolicyEnforcer;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.AnsiStrippingOutputStream;
+import com.google.devtools.build.lib.util.BlazeClock;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.LoggingUtil;
 import com.google.devtools.build.lib.util.Pair;
@@ -45,7 +48,6 @@ import com.google.devtools.common.options.OpaqueOptionsData;
 import com.google.devtools.common.options.OptionPriority;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingException;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -57,7 +59,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
-
 import javax.annotation.Nullable;
 
 /**
@@ -146,6 +147,7 @@ public class BlazeCommandDispatcher {
   private final BlazeRuntime runtime;
   private final Object commandLock;
   private String currentClientDescription = null;
+  private String shutdownReason = null;
   private OutputStream logOutputStream = null;
   private final LoadingCache<BlazeCommand, OpaqueOptionsData> optionsDataCache =
       CacheBuilder.newBuilder().build(
@@ -290,13 +292,20 @@ public class BlazeCommandDispatcher {
     }
 
 
+    long waitTimeInMs = 0;
     synchronized (commandLock) {
-      if (currentClientDescription != null) {
+      boolean warningPrinted = false;
+      while (currentClientDescription != null) {
         switch (lockingMode) {
           case WAIT:
-            outErr.printErrLn("Another command (" + currentClientDescription + ") is running. "
-                + " Waiting for it to complete...");
+            if (!warningPrinted) {
+              outErr.printErrLn("Another command (" + currentClientDescription + ") is running. "
+                  + " Waiting for it to complete...");
+              warningPrinted = true;
+            }
+            long clockBefore = BlazeClock.nanoTime();
             commandLock.wait();
+            waitTimeInMs = (BlazeClock.nanoTime() - clockBefore) / (1000L * 1000L);
             break;
 
           case ERROR_OUT:
@@ -313,7 +322,14 @@ public class BlazeCommandDispatcher {
     }
 
     try {
-      return execExclusively(args, outErr, firstContactTime, commandName, command);
+      if (shutdownReason != null) {
+        outErr.printErrLn("Server shut down " + shutdownReason);
+        return ExitCode.LOCAL_ENVIRONMENTAL_ERROR.getNumericExitCode();
+      }
+      return execExclusively(args, outErr, firstContactTime, commandName, command, waitTimeInMs);
+    } catch (ShutdownBlazeServerException e) {
+      shutdownReason = "explicitly by client " + currentClientDescription;
+      throw e;
     } finally {
       synchronized (commandLock) {
         currentClientDescription = null;
@@ -323,7 +339,8 @@ public class BlazeCommandDispatcher {
   }
 
   private int execExclusively(List<String> args, OutErr outErr, long firstContactTime,
-      String commandName, BlazeCommand command) throws ShutdownBlazeServerException {
+      String commandName, BlazeCommand command, long waitTimeInMs)
+      throws ShutdownBlazeServerException {
     Command commandAnnotation = command.getClass().getAnnotation(Command.class);
 
     // Record the start time for the profiler. Do not put anything before this!
@@ -353,18 +370,20 @@ public class BlazeCommandDispatcher {
       return exitCausingException.getExitCode().getNumericExitCode();
     }
 
-    try {
-      Path commandLog = getCommandLogPath(env.getOutputBase());
+    if (env.getRuntime().writeCommandLog()) {
+      try {
+        Path commandLog = getCommandLogPath(env.getOutputBase());
 
-      // Unlink old command log from previous build, if present, so scripts
-      // reading it don't conflate it with the command log we're about to write.
-      commandLog.delete();
+        // Unlink old command log from previous build, if present, so scripts
+        // reading it don't conflate it with the command log we're about to write.
+        commandLog.delete();
 
-      logOutputStream = commandLog.getOutputStream();
-      outErr = tee(outErr, OutErr.create(logOutputStream, logOutputStream));
-    } catch (IOException ioException) {
-      LoggingUtil.logToRemote(
-          Level.WARNING, "Unable to delete or open command.log", ioException);
+        logOutputStream = commandLog.getOutputStream();
+        outErr = tee(outErr, OutErr.create(logOutputStream, logOutputStream));
+      } catch (IOException ioException) {
+        LoggingUtil.logToRemote(
+            Level.WARNING, "Unable to delete or open command.log", ioException);
+      }
     }
 
     ExitCode result = checkCwdInWorkspace(env, commandAnnotation, commandName, outErr);
@@ -402,6 +421,7 @@ public class BlazeCommandDispatcher {
     BlazeCommandEventHandler.Options eventHandlerOptions =
         optionsParser.getOptions(BlazeCommandEventHandler.Options.class);
     OutErr colorfulOutErr = outErr;
+
     if (!eventHandlerOptions.useColor()) {
       outErr = ansiStripOut(ansiStripErr(outErr));
       if (!commandAnnotation.binaryStdOut()) {
@@ -410,6 +430,14 @@ public class BlazeCommandDispatcher {
       if (!commandAnnotation.binaryStdErr()) {
         colorfulOutErr = ansiStripErr(colorfulOutErr);
       }
+    }
+
+    if (!commandAnnotation.binaryStdOut()) {
+      outErr = lineBufferOut(outErr);
+    }
+
+    if (!commandAnnotation.binaryStdErr()) {
+      outErr = lineBufferErr(outErr);
     }
 
     CommonCommandOptions commonOptions = optionsParser.getOptions(CommonCommandOptions.class);
@@ -426,6 +454,18 @@ public class BlazeCommandDispatcher {
     Reporter reporter = env.getReporter();
     reporter.addHandler(handler);
     env.getEventBus().register(handler);
+    if (eventHandlerOptions.buildEventTextFile.length() > 0) {
+      try {
+        BuildEventStreamer streamer =
+            new BuildEventStreamer(
+                ImmutableSet.<BuildEventTransport>of(
+                    new TextFormatFileTransport(eventHandlerOptions.buildEventTextFile)));
+        reporter.addHandler(streamer);
+        env.getEventBus().register(streamer);
+      } catch (IOException e) {
+        return ExitCode.LOCAL_ENVIRONMENTAL_ERROR.getNumericExitCode();
+      }
+    }
 
     // We register an ANSI-allowing handler associated with {@code handler} so that ANSI control
     // codes can be re-introduced later even if blaze is invoked with --color=no. This is useful
@@ -462,12 +502,16 @@ public class BlazeCommandDispatcher {
 
       try {
         // Notify the BlazeRuntime, so it can do some initial setup.
-        env.beforeCommand(commandAnnotation, optionsParser, commonOptions, execStartTimeNanos);
+        env.beforeCommand(commandAnnotation, optionsParser, commonOptions, execStartTimeNanos,
+            waitTimeInMs);
         // Allow the command to edit options after parsing:
         command.editOptions(env, optionsParser);
       } catch (AbruptExitException e) {
         reporter.handle(Event.error(e.getMessage()));
         return e.getExitCode().getNumericExitCode();
+      }
+      for (BlazeModule module : runtime.getBlazeModules()) {
+        module.handleOptions(optionsParser);
       }
 
       // Print warnings for odd options usage
@@ -483,13 +527,13 @@ public class BlazeCommandDispatcher {
       numericExitCode = e.getExitStatus();
       throw e;
     } catch (Throwable e) {
+      e.printStackTrace();
       BugReport.printBug(outErr, e);
       BugReport.sendBugReport(e, args, crashData);
-      numericExitCode = e instanceof OutOfMemoryError
-          ? ExitCode.OOM_ERROR.getNumericExitCode()
-          : ExitCode.BLAZE_INTERNAL_ERROR.getNumericExitCode();
+      numericExitCode = BugReport.getExitCodeForThrowable(e);
       throw new ShutdownBlazeServerException(numericExitCode, ShutdownMethod.CLEAN, e);
     } finally {
+      env.getEventBus().post(new AfterCommandEvent());
       runtime.afterCommand(env, numericExitCode);
       // Swallow IOException, as we are already in a finally clause
       Flushables.flushQuietly(outErr.getOutputStream());
@@ -604,6 +648,16 @@ public class BlazeCommandDispatcher {
       getCommandNamesToParseHelper(base.getAnnotation(Command.class), accumulator);
     }
     accumulator.add(commandAnnotation.name());
+  }
+
+  private OutErr lineBufferOut(OutErr outErr) {
+    OutputStream wrappedOut = new LineBufferedOutputStream(outErr.getOutputStream());
+    return OutErr.create(wrappedOut, outErr.getErrorStream());
+  }
+
+  private OutErr lineBufferErr(OutErr outErr) {
+    OutputStream wrappedErr = new LineBufferedOutputStream(outErr.getErrorStream());
+    return OutErr.create(outErr.getOutputStream(), wrappedErr);
   }
 
   private OutErr ansiStripOut(OutErr outErr) {

@@ -15,6 +15,9 @@ cc_library(
         "//src:windows": [
             "mapped_file_windows.cc",
         ],
+        "//src:windows_msvc": [
+            "mapped_file_windows.cc",
+        ],
         "//conditions:default": [
             "mapped_file_unix.cc",
         ],
@@ -23,6 +26,16 @@ cc_library(
         "common.h",
         "mapped_file.h",
         "zip.h",
+    ],
+    deps = [":zlib_client"],
+)
+
+cc_library(
+    name = "zlib_client",
+    srcs = ["zlib_client.cc"],
+    hdrs = [
+        "common.h",
+        "zlib_client.h",
     ],
     deps = ["//third_party/zlib"],
 )

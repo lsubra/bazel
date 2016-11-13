@@ -16,10 +16,11 @@ package com.google.devtools.build.lib.bazel.repository;
 
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.bazel.repository.downloader.HttpDownloader;
-import com.google.devtools.build.lib.packages.AggregatingAttributeMapper;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.rules.repository.NewRepositoryBuildFileHandler;
 import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
+import com.google.devtools.build.lib.rules.repository.WorkspaceAttributeMapper;
+import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
@@ -28,7 +29,7 @@ import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyValue;
 
 import java.io.IOException;
-
+import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.Nullable;
 
 /**
@@ -36,6 +37,10 @@ import javax.annotation.Nullable;
  * file for it.
  */
 public class NewHttpArchiveFunction extends HttpArchiveFunction {
+
+  public NewHttpArchiveFunction(AtomicReference<HttpDownloader> httpDownloader) {
+    super(httpDownloader);
+  }
 
   @Nullable
   @Override
@@ -56,16 +61,19 @@ public class NewHttpArchiveFunction extends HttpArchiveFunction {
     }
 
     // Download.
-    Path downloadedPath = HttpDownloader.download(
+    Path downloadedPath = httpDownloader.get().download(
         rule, outputDirectory, env.getListener(), clientEnvironment);
 
     // Decompress.
     Path decompressed;
-    AggregatingAttributeMapper mapper = AggregatingAttributeMapper.of(rule);
+    WorkspaceAttributeMapper mapper = WorkspaceAttributeMapper.of(rule);
     String prefix = null;
-    if (mapper.has("strip_prefix", Type.STRING)
-        && !mapper.get("strip_prefix", Type.STRING).isEmpty()) {
-      prefix = mapper.get("strip_prefix", Type.STRING);
+    if (mapper.isAttributeValueExplicitlySpecified("strip_prefix")) {
+      try {
+        prefix = mapper.get("strip_prefix", Type.STRING);
+      } catch (EvalException e) {
+        throw new RepositoryFunctionException(e, Transience.PERSISTENT);
+      }
     }
     decompressed = DecompressorValue.decompress(DecompressorDescriptor.builder()
         .setTargetKind(rule.getTargetKind())

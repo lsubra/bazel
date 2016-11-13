@@ -16,15 +16,16 @@ package com.google.devtools.build.lib.rules.proto;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.Fragment;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.common.options.Option;
-
 import java.util.List;
 
 /**
@@ -51,6 +52,71 @@ public class ProtoConfiguration extends Fragment {
       help = "Run extra actions for alternative Java api versions in a proto_library."
     )
     public boolean experimentalProtoExtraActions;
+
+    @Option(
+      name = "proto_compiler",
+      defaultValue = "null",
+      category = "version",
+      converter = BuildConfiguration.LabelConverter.class,
+      help = "The label of the proto-compiler."
+    )
+    public Label protoCompiler;
+
+    // TODO(b/31775048): Replace with a toolchain
+    /** This is experimental, and is subject to change without warning. */
+    @Option(
+      name = "proto_compiler_java_flags",
+      defaultValue = "--java_out=shared,immutable:%s",
+      category = "experimental",
+      help = "The flags to pass to proto-compiler when generating Java protos."
+    )
+    public String protoCompilerJavaFlags;
+
+    // TODO(b/31775048): Replace with a toolchain
+    /** This is experimental, and is subject to change without warning. */
+    @Option(
+      name = "proto_compiler_java_blacklisted_protos",
+      defaultValue = "",
+      category = "experimental",
+      converter = BuildConfiguration.LabelListConverter.class,
+      help = "A label of a filegroup of .proto files that we shouldn't generate sources for."
+    )
+    public List<Label> protoCompilerJavaBlacklistedProtos;
+
+    // TODO(b/31775048): Replace with a toolchain
+    /** This is experimental, and is subject to change without warning. */
+    @Option(
+      name = "proto_compiler_javalite_flags",
+      defaultValue = "--javalite_out=%s",
+      category = "experimental",
+      help = "The flags to pass to proto-compiler when generating JavaLite protos."
+    )
+    public String protoCompilerJavaLiteFlags;
+
+    // TODO(b/31775048): Replace with a toolchain
+    /** This is experimental, and is subject to change without warning. */
+    @Option(
+      name = "proto_compiler_javalite_plugin",
+      defaultValue = "",
+      category = "experimental",
+      converter = BuildConfiguration.EmptyToNullLabelConverter.class,
+      help = "A label for the javalite proto-compiler plugin, if needed."
+    )
+    public Label protoCompilerJavaLitePlugin;
+
+    @Override
+    public FragmentOptions getHost(boolean fallback) {
+      Options host = (Options) super.getHost(fallback);
+      host.protoCompiler = protoCompiler;
+      host.protocOpts = protocOpts;
+      host.experimentalProtoExtraActions = experimentalProtoExtraActions;
+      host.protoCompiler = protoCompiler;
+      host.protoCompilerJavaFlags = protoCompilerJavaFlags;
+      host.protoCompilerJavaBlacklistedProtos = protoCompilerJavaBlacklistedProtos;
+      host.protoCompilerJavaLiteFlags = protoCompilerJavaLiteFlags;
+      host.protoCompilerJavaLitePlugin = protoCompilerJavaLitePlugin;
+      return host;
+    }
   }
 
   /**
@@ -76,10 +142,20 @@ public class ProtoConfiguration extends Fragment {
 
   private final boolean experimentalProtoExtraActions;
   private final ImmutableList<String> protocOpts;
+  private final Label protoCompiler;
+  private final String protoCompilerJavaFlags;
+  private final List<Label> protoCompilerJavaBlacklistedProtos;
+  private final String protoCompilerJavaLiteFlags;
+  private final Label protoCompilerJavaLitePlugin;
 
   public ProtoConfiguration(Options options) {
     this.experimentalProtoExtraActions = options.experimentalProtoExtraActions;
     this.protocOpts = ImmutableList.copyOf(options.protocOpts);
+    this.protoCompiler = options.protoCompiler;
+    this.protoCompilerJavaFlags = options.protoCompilerJavaFlags;
+    this.protoCompilerJavaLiteFlags = options.protoCompilerJavaLiteFlags;
+    this.protoCompilerJavaLitePlugin = options.protoCompilerJavaLitePlugin;
+    this.protoCompilerJavaBlacklistedProtos = options.protoCompilerJavaBlacklistedProtos;
   }
 
   public ImmutableList<String> protocOpts() {
@@ -93,5 +169,25 @@ public class ProtoConfiguration extends Fragment {
    */
   public boolean runExperimentalProtoExtraActions() {
     return experimentalProtoExtraActions;
+  }
+
+  public Label protoCompiler() {
+    return protoCompiler;
+  }
+
+  public String protoCompilerJavaFlags() {
+    return protoCompilerJavaFlags;
+  }
+
+  public String protoCompilerJavaLiteFlags() {
+    return protoCompilerJavaLiteFlags;
+  }
+
+  public Label protoCompilerJavaLitePlugin() {
+    return protoCompilerJavaLitePlugin;
+  }
+
+  public List<Label> protoCompilerJavaBlacklistedProtos() {
+    return protoCompilerJavaBlacklistedProtos;
   }
 }

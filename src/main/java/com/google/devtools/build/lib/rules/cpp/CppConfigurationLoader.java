@@ -39,7 +39,6 @@ import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig;
-
 import javax.annotation.Nullable;
 
 /**
@@ -69,13 +68,14 @@ public class CppConfigurationLoader implements ConfigurationFragmentFactory {
 
   @Override
   public CppConfiguration create(ConfigurationEnvironment env, BuildOptions options)
-      throws InvalidConfigurationException {
+      throws InvalidConfigurationException, InterruptedException {
     CppConfigurationParameters params = createParameters(env, options);
     if (params == null) {
       return null;
     }
     CppConfiguration cppConfig = new CppConfiguration(params);
     if (options.get(BuildConfiguration.Options.class).useDynamicConfigurations
+        != BuildConfiguration.Options.DynamicConfigsMode.OFF
         && cppConfig.getLipoMode() != CrosstoolConfig.LipoMode.OFF) {
       throw new InvalidConfigurationException(
           "LIPO does not currently work with dynamic configurations");
@@ -113,7 +113,8 @@ public class CppConfigurationLoader implements ConfigurationFragmentFactory {
 
   @Nullable
   protected CppConfigurationParameters createParameters(
-      ConfigurationEnvironment env, BuildOptions options) throws InvalidConfigurationException {
+      ConfigurationEnvironment env, BuildOptions options)
+      throws InvalidConfigurationException, InterruptedException {
     BlazeDirectories directories = env.getBlazeDirectories();
     if (directories == null) {
       return null;
@@ -188,13 +189,9 @@ public class CppConfigurationLoader implements ConfigurationFragmentFactory {
             crosstoolTopLabel, toolchain.getTargetCpu(), toolchain.getCompiler()));
       }
     } else {
-      try {
-        ccToolchainLabel = crosstoolTopLabel.getRelative("cc-compiler-" + toolchain.getTargetCpu());
-      } catch (LabelSyntaxException e) {
-        throw new InvalidConfigurationException(String.format(
-            "'%s' is not a valid CPU. It should only consist of characters valid in labels",
-            toolchain.getTargetCpu()));
-      }
+      throw new InvalidConfigurationException(String.format(
+          "The specified --crosstool_top '%s' is not a valid cc_toolchain_suite rule",
+          crosstoolTopLabel));
     }
 
     Target ccToolchain;

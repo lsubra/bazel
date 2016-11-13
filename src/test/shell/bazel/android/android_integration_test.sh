@@ -14,9 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Load test environment
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 
 function create_android_binary() {
@@ -159,6 +160,23 @@ function check_num_sos() {
   assert_equals "11" "$num_sos"
 }
 
+function check_soname() {
+  # For an android_binary with name foo, readelf output format is
+  #  Tag        Type          Name/Value
+  # 0x00000010 (SONAME)       Library soname: [libfoo]
+  #
+  # If -Wl,soname= is not set, then SONAME will not appear in the output.
+  #
+  # readelf is a Linux utility and not available on Mac by default. The NDK
+  # includes readelf however the path is difference for Mac vs Linux, hence the
+  # star.
+  readelf="${TEST_SRCDIR}/androidndk/ndk/toolchains/arm-linux-androideabi-4.9/prebuilt/*/bin/arm-linux-androideabi-readelf"
+  soname=$($readelf -d bazel-bin/java/bazel/_dx/bin/native_symlinks/x86/libbin.so \
+    | grep SONAME \
+    | awk '{print substr($5,2,length($5)-2)}')
+  assert_equals "libbin" "$soname"
+}
+
 function test_sdk_library_deps() {
   create_new_workspace
   setup_android_support
@@ -183,6 +201,7 @@ function test_android_binary() {
 
   bazel build -s //java/bazel:bin --fat_apk_cpu="$cpus" || fail "build failed"
   check_num_sos
+  check_soname
 }
 
 function test_android_binary_clang() {
@@ -202,6 +221,7 @@ function test_android_binary_clang() {
       --android_compiler=clang3.8 \
       || fail "build failed"
   check_num_sos
+  check_soname
 }
 
 # ndk r10 and earlier
@@ -213,7 +233,7 @@ if [[ ! -r "${TEST_SRCDIR}/androidndk/ndk/RELEASE.TXT" ]]; then
   fi
 fi
 
-if [[ ! -r "${TEST_SRCDIR}/androidsdk/SDK Readme.txt" ]]; then
+if [[ ! -r "${TEST_SRCDIR}/androidsdk/tools/android" ]]; then
   echo "Not running Android tests due to lack of an Android SDK."
   exit 0
 fi

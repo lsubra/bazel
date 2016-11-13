@@ -11,11 +11,13 @@ java_library(
     deps = [
         "//src/main/java/com/google/devtools/build/lib:android-rules",
         "//src/main/java/com/google/devtools/build/lib:build-base",
+        "//src/main/java/com/google/devtools/build/lib:java-compilation",
         "//src/main/java/com/google/devtools/build/lib:java-rules",
         "//src/main/java/com/google/devtools/build/lib:packages",
         "//src/main/java/com/google/devtools/build/lib:skylarkinterface",
         "//src/main/java/com/google/devtools/build/lib/rules/apple",
         "//src/main/java/com/google/devtools/build/lib/rules/cpp",
+        "//src/main/java/com/google/devtools/common/options",
         "//third_party:apache_velocity",
         "//third_party:guava",
         "//third_party:jsr305",
@@ -30,6 +32,7 @@ java_binary(
         ":docgen_javalib",
         "//src/main/java/com/google/devtools/build/lib:bazel-rules",
         "//src/main/java/com/google/devtools/build/lib:build-base",
+        "//src/main/java/com/google/devtools/common/options",
     ],
 )
 
@@ -51,5 +54,6 @@ filegroup(
 
 filegroup(
     name = "srcs",
+    testonly = 0,  # All srcs should be not test only, overwrite package default.
     srcs = glob(["**"]),
 )

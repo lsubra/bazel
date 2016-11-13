@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -62,6 +64,8 @@ void ExecuteProgram(const string &exe, const vector<string> &args_vector) {
 
 std::string ConvertPath(const std::string &path) { return path; }
 
+std::string ConvertPathList(const std::string& path_list) { return path_list; }
+
 std::string ListSeparator() { return ":"; }
 
 bool SymlinkDirectories(const string &target, const string &link) {
@@ -96,7 +100,7 @@ static void Daemonize(const string& daemon_output) {
     // In a daemon, no-one can hear you scream.
     open("/dev/null", O_WRONLY);
   }
-  dup(STDOUT_FILENO);  // stderr (2>&1)
+  (void) dup(STDOUT_FILENO);  // stderr (2>&1)
 }
 
 class PipeBlazeServerStartup : public BlazeServerStartup {
@@ -149,9 +153,8 @@ void ExecuteDaemon(const string& exe,
 
   Daemonize(daemon_output);
   string pid_string = ToString(getpid());
-  string pid_file = blaze_util::JoinPath(server_dir, ServerPidFile());
-  string pid_symlink_file =
-      blaze_util::JoinPath(server_dir, ServerPidSymlink());
+  string pid_file = blaze_util::JoinPath(server_dir, kServerPidFile);
+  string pid_symlink_file = blaze_util::JoinPath(server_dir, kServerPidSymlink);
 
   if (!WriteFile(pid_string, pid_file)) {
     // The exit code does not matter because we are already in the daemonized
@@ -196,6 +199,7 @@ string RunProgram(const string& exe, const std::vector<string>& args_vector) {
     ExecuteProgram(exe, args_vector);
     pdie(blaze_exit_code::INTERNAL_ERROR, "Failed to run %s", exe.c_str());
   }
+  return string("");  //  We cannot reach here, just placate the compiler.
 }
 
 bool ReadDirectorySymlink(const string &name, string* result) {

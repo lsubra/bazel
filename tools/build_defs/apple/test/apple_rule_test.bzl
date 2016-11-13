@@ -23,14 +23,23 @@ load(
     "rule_test",
 )
 
-def apple_rule_test(package):
+
+def apple_rule_test():
   """Issue simple tests on apple rules."""
+  swift_library(
+      name = "test_lib",
+      module_name = "test_lib",
+      srcs = ["source.swift"]
+  )
+
   rule_test(
-      name ="swift_lib_test",
-      generates = ["swift_lib.a", "swift_lib.swiftmodule"],
+      name = "simple_swift_library_test",
+      generates = ["test_lib/_objs/test_lib.a",
+                   "test_lib/_objs/test_lib.swiftmodule",
+                   "test_lib-Swift.h"],
       provides = {
           "swift": "",
-          "objc_export": ""
+          "objc": ""
       },
-      rule = package + ":swift_lib",
+      rule = ":test_lib",
   )

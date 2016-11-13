@@ -23,16 +23,20 @@ import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration.ConfigurationDistinguisher;
 import com.google.devtools.build.lib.rules.apple.Platform.PlatformType;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
 import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
 import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
-
 import java.util.List;
 
 /**
  * Command-line options for building for Apple platforms.
  */
 public class AppleCommandLineOptions extends FragmentOptions {
+
+  @VisibleForTesting
+  public static final String DEFAULT_MINIMUM_IOS = "7.0";
 
   @Option(
     name = "xcode_version",
@@ -83,10 +87,48 @@ public class AppleCommandLineOptions extends FragmentOptions {
   )
   public DottedVersion macOsXSdkVersion;
 
+  @Option(
+      name = "ios_minimum_os",
+      defaultValue = DEFAULT_MINIMUM_IOS,
+      category = "flags",
+      converter = DottedVersionConverter.class,
+      help = "Minimum compatible iOS version for target simulators and devices."
+  )
+  public DottedVersion iosMinimumOs;
+
+  @Option(
+      name = "watchos_minimum_os",
+      defaultValue = "null",
+      category = "flags",
+      converter = DottedVersionConverter.class,
+      help = "Minimum compatible watchOS version for target simulators and devices."
+  )
+  public DottedVersion watchosMinimumOs;
+
+  @Option(
+      name = "tvos_minimum_os",
+      defaultValue = "null",
+      category = "flags",
+      converter = DottedVersionConverter.class,
+      help = "Minimum compatible tvOS version for target simulators and devices."
+  )
+  public DottedVersion tvosMinimumOs;
+
   @VisibleForTesting public static final String DEFAULT_IOS_SDK_VERSION = "8.4";
   @VisibleForTesting public static final String DEFAULT_WATCHOS_SDK_VERSION = "2.0";
   @VisibleForTesting public static final String DEFAULT_MACOSX_SDK_VERSION = "10.10";
-  @VisibleForTesting public static final String DEFAULT_APPLETVOS_SDK_VERSION = "1.0";
+  @VisibleForTesting public static final String DEFAULT_TVOS_SDK_VERSION = "9.0";
+  @VisibleForTesting static final String DEFAULT_IOS_CPU = "x86_64";
+
+  /**
+   * The default watchos CPU value.
+   */
+  public static final String DEFAULT_WATCHOS_CPU = "i386";
+
+  /**
+   * The default tvOS CPU value.
+   */
+  public static final String DEFAULT_TVOS_CPU = "x86_64";
 
   @Option(name = "ios_cpu",
       defaultValue = DEFAULT_IOS_CPU,
@@ -131,7 +173,19 @@ public class AppleCommandLineOptions extends FragmentOptions {
           + "is a universal binary containing all specified architectures.")
   public List<String> iosMultiCpus;
 
-  @VisibleForTesting static final String DEFAULT_IOS_CPU = "x86_64";
+  @Option(name = "watchos_cpus",
+      converter = CommaSeparatedOptionListConverter.class,
+      defaultValue = DEFAULT_WATCHOS_CPU,
+      category = "flags",
+      help = "Comma-separated list of architectures for which to build Apple watchOS binaries.")
+  public List<String> watchosCpus;
+
+  @Option(name = "tvos_cpus",
+      converter = CommaSeparatedOptionListConverter.class,
+      defaultValue = DEFAULT_TVOS_CPU,
+      category = "flags",
+      help = "Comma-separated list of architectures for which to build Apple tvOS binaries.")
+  public List<String> tvosCpus;
 
   @Option(name = "default_ios_provisioning_profile",
       defaultValue = "",
@@ -139,18 +193,31 @@ public class AppleCommandLineOptions extends FragmentOptions {
       converter = DefaultProvisioningProfileConverter.class)
   public Label defaultProvisioningProfile;
 
-  @Option(name = "xcode_version_config",
-      defaultValue = "@bazel_tools" + DEFAULT_XCODE_VERSION_CONFIG_LABEL,
-      category = "undocumented",
-      converter = LabelConverter.class,
-      help = "The label of the xcode_config rule to be used for selecting the xcode version "
-          + "in the build configuration")
+  @Option(
+    name = "xcode_version_config",
+    defaultValue = "@local_config_xcode//:host_xcodes",
+    category = "undocumented",
+    converter = LabelConverter.class,
+    help =
+        "The label of the xcode_config rule to be used for selecting the xcode version "
+            + "in the build configuration"
+  )
   public Label xcodeVersionConfig;
+
+  // TODO(b/30281236): Remove the flag after deprecation.
+  @Option(
+    name = "experimental_disable_native_swift_rules",
+    defaultValue = "false",
+    category = "undocumented",
+    help = "Disables Swift support in native objc_ rules."
+  )
+  public boolean disableNativeSwiftRules;
 
   /**
    * The default label of the build-wide {@code xcode_config} configuration rule. This can be
    * changed from the default using the {@code xcode_version_config} build flag.
    */
+  // TODO(cparsons): Update all callers to reference the actual xcode_version_config flag value.
   static final String DEFAULT_XCODE_VERSION_CONFIG_LABEL = "//tools/objc:host_xcodes";
 
   /** Converter for --default_ios_provisioning_profile. */
@@ -159,6 +226,17 @@ public class AppleCommandLineOptions extends FragmentOptions {
       super("//tools/objc:default_provisioning_profile");
     }
   }
+
+  @Option(
+    name = "xcode_toolchain",
+    defaultValue = "null",
+    category = "flags",
+    help = "The identifier of an Xcode toolchain to use for builds. Currently only the toolchains "
+           + "that ship with Xcode are supported. For example, in addition to the default toolchain"
+           + " Xcode 8 has 'com.apple.dt.toolchain.Swift_2_3' which can be used for building legacy"
+           + " Swift code."
+  )
+  public String xcodeToolchain;
 
   @Option(name = "apple_bitcode",
       converter = AppleBitcodeMode.Converter.class,
@@ -189,33 +267,40 @@ public class AppleCommandLineOptions extends FragmentOptions {
   /**
    * Represents the Apple Bitcode mode for compilation steps.
    *
-   * <p>Bitcode is an intermediate representation of a compiled program. For many platforms,
-   * Apple requires app submissions to contain bitcode in order to be uploaded to the app store.
+   * <p>Bitcode is an intermediate representation of a compiled program. For many platforms, Apple
+   * requires app submissions to contain bitcode in order to be uploaded to the app store.
    *
-   * <p>This is a build-wide value, as bitcode mode needs to be consistent among a target and
-   * its compiled dependencies.
+   * <p>This is a build-wide value, as bitcode mode needs to be consistent among a target and its
+   * compiled dependencies.
    */
+  @SkylarkModule(
+    name = "apple_bitcode_mode",
+    category = SkylarkModuleCategory.NONE,
+    doc =
+        "Apple Bitcode mode for compilation steps. Possible values are \"none\", "
+            + "\"embedded\", and \"embedded_markers\""
+  )
   public enum AppleBitcodeMode {
 
+    /** Do not compile bitcode. */
+    NONE("none", ImmutableList.<String>of()),
     /**
-     * Do not compile bitcode.
+     * Compile the minimal set of bitcode markers. This is often the best option for developer/debug
+     * builds.
      */
-    NONE("none"),
-    /**
-     * Compile the minimal set of bitcode markers. This is often the best option for
-     * developer/debug builds.
-     */
-    EMBEDDED_MARKERS("embedded_markers", "-fembed-bitcode-marker"),
-    /**
-     * Fully embed bitcode in compiled files. This is often the best option for release builds.
-     */
-    EMBEDDED("embedded", "-fembed-bitcode");
+    EMBEDDED_MARKERS(
+        "embedded_markers", ImmutableList.of("bitcode_embedded_markers"), "-fembed-bitcode-marker"),
+    /** Fully embed bitcode in compiled files. This is often the best option for release builds. */
+    EMBEDDED("embedded", ImmutableList.of("bitcode_embedded"), "-fembed-bitcode");
 
     private final String mode;
+    private final ImmutableList<String> featureNames;
     private final ImmutableList<String> compilerFlags;
 
-    private AppleBitcodeMode(String mode, String... compilerFlags) {
+    private AppleBitcodeMode(
+        String mode, ImmutableList<String> featureNames, String... compilerFlags) {
       this.mode = mode;
+      this.featureNames = featureNames;
       this.compilerFlags = ImmutableList.copyOf(compilerFlags);
     }
 
@@ -224,9 +309,12 @@ public class AppleCommandLineOptions extends FragmentOptions {
       return mode;
     }
 
-    /**
-     * Returns the flags that should be added to compile actions to use this bitcode setting.
-     */
+    /** Returns the names of any crosstool features that correspond to this bitcode mode. */
+    public ImmutableList<String> getFeatureNames() {
+      return featureNames;
+    }
+
+    /** Returns the flags that should be added to compile actions to use this bitcode setting. */
     public ImmutableList<String> getCompilerFlags() {
       return compilerFlags;
     }

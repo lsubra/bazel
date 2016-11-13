@@ -14,7 +14,6 @@
 
 package com.google.devtools.build.lib.rules.cpp;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Functions;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
@@ -24,7 +23,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.Root;
 import com.google.devtools.build.lib.analysis.AnalysisEnvironment;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
@@ -37,12 +35,12 @@ import com.google.devtools.build.lib.rules.cpp.CppCompileAction.DotdFile;
 import com.google.devtools.build.lib.rules.cpp.CppCompileAction.SpecialInputsHandler;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Preconditions;
-import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -78,8 +76,12 @@ public class CppCompileActionBuilder {
   private Class<? extends CppCompileActionContext> actionContext;
   private CppConfiguration cppConfiguration;
   private ImmutableMap<Artifact, IncludeScannable> lipoScannableMap;
+  private final ImmutableList.Builder<Artifact> additionalIncludeFiles =
+      new ImmutableList.Builder<>();
   private RuleContext ruleContext = null;
   private Boolean shouldScanIncludes;
+  private Map<String, String> environment = new LinkedHashMap<>();
+  private CppSemantics cppSemantics;
   // New fields need to be added to the copy constructor.
 
   /**
@@ -147,6 +149,8 @@ public class CppCompileActionBuilder {
     this.lipoScannableMap = other.lipoScannableMap;
     this.ruleContext = other.ruleContext;
     this.shouldScanIncludes = other.shouldScanIncludes;
+    this.environment = new LinkedHashMap<>(other.environment);
+    this.cppSemantics = other.cppSemantics;
   }
 
   public PathFragment getTempOutputFile() {
@@ -226,6 +230,8 @@ public class CppCompileActionBuilder {
       return CppCompileAction.ASSEMBLE;
     } else if (CppFileTypes.ASSEMBLER_WITH_C_PREPROCESSOR.matches(sourcePath)) {
       return CppCompileAction.PREPROCESS_ASSEMBLE;
+    } else if (CppFileTypes.CLIF_INPUT_PROTO.matches(sourcePath)) {
+      return CppCompileAction.CLIF_MATCH;
     }
     // CcLibraryHelper ensures CppCompileAction only gets instantiated for supported file types.
     throw new IllegalStateException();
@@ -243,16 +249,34 @@ public class CppCompileActionBuilder {
     // finalizeCompileActionBuilder on this builder.
     Preconditions.checkNotNull(shouldScanIncludes);
 
+    boolean fake = tempOutputFile != null;
+
     // Configuration can be null in tests.
     NestedSetBuilder<Artifact> realMandatoryInputsBuilder = NestedSetBuilder.compileOrder();
     realMandatoryInputsBuilder.addTransitive(mandatoryInputsBuilder.build());
-    if (tempOutputFile == null && !shouldScanIncludes) {
+    if (!fake && !shouldScanIncludes) {
       realMandatoryInputsBuilder.addTransitive(context.getDeclaredIncludeSrcs());
     }
-    realMandatoryInputsBuilder.addTransitive(context.getAdditionalInputs(usePic));
+    // We disable pruning header modules in CPP_MODULE_COMPILEs as that would lead to
+    // module-out-of-date errors. The problem surfaces if a module A depends on a module B, but the
+    // headers of module A don't actually use any of B's headers.  Then we would not need to rebuild
+    // A when B changes although we are storing a dependency in it. If B changes and we then build
+    // something that uses A (a header of it), we mark A and all of its transitive deps as inputs.
+    // We still don't need to rebuild A, as none of its inputs have changed, but we do rebuild B
+    // now and then the two modules are out of sync.
+    // We also have to disable this for fake C++ compile actions as those currently do a build first
+    // before discovering inputs and thus would not declare their inputs properly.
+    boolean shouldPruneModules =
+        shouldScanIncludes
+            && !fake
+            && !getActionName().equals(CppCompileAction.CPP_MODULE_COMPILE)
+            && featureConfiguration.isEnabled(CppRuleClasses.PRUNE_HEADER_MODULES);
+    if (featureConfiguration.isEnabled(CppRuleClasses.USE_HEADER_MODULES) && !shouldPruneModules) {
+      realMandatoryInputsBuilder.addTransitive(context.getTransitiveModules(usePic));
+    }
+    realMandatoryInputsBuilder.addTransitive(context.getAdditionalInputs());
 
     realMandatoryInputsBuilder.add(sourceFile);
-    boolean fake = tempOutputFile != null;
 
     // If the crosstool uses action_configs to configure cc compilation, collect execution info
     // from there, otherwise, use no execution info.
@@ -262,7 +286,7 @@ public class CppCompileActionBuilder {
       executionRequirements =
           featureConfiguration.getToolForAction(getActionName()).getExecutionRequirements();
     }
-    
+
     // Copying the collections is needed to make the builder reusable.
     if (fake) {
       return new FakeCppCompileAction(
@@ -272,6 +296,8 @@ public class CppCompileActionBuilder {
           variables,
           sourceFile,
           shouldScanIncludes,
+          shouldPruneModules,
+          usePic,
           sourceLabel,
           realMandatoryInputsBuilder.build(),
           outputFile,
@@ -283,7 +309,8 @@ public class CppCompileActionBuilder {
           actionContext,
           ImmutableList.copyOf(copts),
           getNocoptPredicate(nocopts),
-          ruleContext);
+          ruleContext,
+          cppSemantics);
     } else {
       NestedSet<Artifact> realMandatoryInputs = realMandatoryInputsBuilder.build();
 
@@ -294,6 +321,8 @@ public class CppCompileActionBuilder {
           variables,
           sourceFile,
           shouldScanIncludes,
+          shouldPruneModules,
+          usePic,
           sourceLabel,
           realMandatoryInputs,
           outputFile,
@@ -309,10 +338,13 @@ public class CppCompileActionBuilder {
           getNocoptPredicate(nocopts),
           specialInputsHandler,
           getLipoScannables(realMandatoryInputs),
+          additionalIncludeFiles.build(),
           actionClassId,
           executionRequirements,
+          ImmutableMap.copyOf(environment),
           getActionName(),
-          ruleContext);
+          ruleContext,
+          cppSemantics);
     }
   }
   
@@ -330,6 +362,11 @@ public class CppCompileActionBuilder {
    */
   public CppCompileActionBuilder setVariables(CcToolchainFeatures.Variables variables) {
     this.variables = variables;
+    return this;
+  }
+
+  public CppCompileActionBuilder addEnvironment(Map<String, String> environment) {
+    this.environment.putAll(environment);
     return this;
   }
 
@@ -376,8 +413,35 @@ public class CppCompileActionBuilder {
     return this;
   }
 
-  public CppCompileActionBuilder setOutputFile(Artifact outputFile) {
+  public CppCompileActionBuilder addAdditionalIncludes(List<Artifact> includes) {
+    additionalIncludeFiles.addAll(includes);
+    return this;
+  }
+
+  public CppCompileActionBuilder setOutputsForTesting(Artifact outputFile, Artifact dotdFile) {
     this.outputFile = outputFile;
+    this.dotdFile = dotdFile == null ? null : new DotdFile(dotdFile);
+    return this;
+  }
+
+  public CppCompileActionBuilder setOutputs(
+      ArtifactCategory outputCategory, String outputName, boolean generateDotd) {
+    this.outputFile = CppHelper.getCompileOutputArtifact(
+        ruleContext, CppHelper.getArtifactNameForCategory(ruleContext, outputCategory, outputName));
+    if (generateDotd) {
+      String dotdFileName = CppHelper.getDotdFileName(ruleContext, outputCategory, outputName);
+      if (configuration.getFragment(CppConfiguration.class).getInmemoryDotdFiles()) {
+        // Just set the path, no artifact is constructed
+        dotdFile = new DotdFile(
+            configuration.getBinDirectory(ruleContext.getRule().getRepository()).getExecPath()
+                .getRelative(CppHelper.getObjDirectory(ruleContext.getLabel()))
+                .getRelative(dotdFileName));
+      } else {
+        dotdFile = new DotdFile(CppHelper.getCompileOutputArtifact(ruleContext, dotdFileName));
+      }
+    } else {
+      dotdFile = null;
+    }
     return this;
   }
 
@@ -401,28 +465,6 @@ public class CppCompileActionBuilder {
    */
   public CppCompileActionBuilder setTempOutputFile(PathFragment tempOutputFile) {
     this.tempOutputFile = tempOutputFile;
-    return this;
-  }
-
-  @VisibleForTesting
-  public CppCompileActionBuilder setDotdFileForTesting(Artifact dotdFile) {
-    this.dotdFile = new DotdFile(dotdFile);
-    return this;
-  }
-
-  public CppCompileActionBuilder setDotdFile(PathFragment outputName, String extension) {
-    if (CppFileTypes.mustProduceDotdFile(outputName.toString())) {
-      if (configuration.getFragment(CppConfiguration.class).getInmemoryDotdFiles()) {
-        // Just set the path, no artifact is constructed
-        PathFragment file = FileSystemUtils.replaceExtension(outputName, extension);
-        Root root = configuration.getBinDirectory();
-        dotdFile = new DotdFile(root.getExecPath().getRelative(file));
-      } else {
-        dotdFile = new DotdFile(ruleContext.getRelatedArtifact(outputName, extension));
-      }
-    } else {
-      dotdFile = null;
-    }
     return this;
   }
 
@@ -468,6 +510,12 @@ public class CppCompileActionBuilder {
     return this;
   }
 
+  /** Sets the CppSemantics for this compile. */
+  public CppCompileActionBuilder setSemantics(CppSemantics semantics) {
+    this.cppSemantics = semantics;
+    return this;
+  }
+  
   public void setShouldScanIncludes(boolean shouldScanIncludes) {
     this.shouldScanIncludes = shouldScanIncludes;
   }

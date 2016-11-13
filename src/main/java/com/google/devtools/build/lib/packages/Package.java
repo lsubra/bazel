@@ -38,7 +38,6 @@ import com.google.devtools.build.lib.util.SpellChecker;
 import com.google.devtools.build.lib.vfs.Canonicalizer;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -47,7 +46,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
 import javax.annotation.Nullable;
 
 /**
@@ -105,7 +103,7 @@ public class Package {
 
   /**
    * The root of the source tree in which this package was found. It is an invariant that
-   * {@code sourceRoot.getRelative(packageId.getPathFragment()).equals(packageDirectory)}.
+   * {@code sourceRoot.getRelative(packageId.getSourceRoot()).equals(packageDirectory)}.
    */
   private Path sourceRoot;
 
@@ -141,10 +139,7 @@ public class Package {
    */
   private String defaultHdrsCheck;
 
-  /**
-   * Default copts for cc_* rules.  The rules' individual copts will append to
-   * this value.
-   */
+  /** Default copts for cc_* rules. The rules' individual copts will append to this value. */
   private ImmutableList<String> defaultCopts;
 
   /**
@@ -294,9 +289,9 @@ public class Package {
     this.filename = builder.getFilename();
     this.packageDirectory = filename.getParentDirectory();
 
-    this.sourceRoot = getSourceRoot(filename, packageIdentifier.getPathFragment());
+    this.sourceRoot = getSourceRoot(filename, packageIdentifier.getSourceRoot());
     if ((sourceRoot == null
-        || !sourceRoot.getRelative(packageIdentifier.getPathFragment()).equals(packageDirectory))
+        || !sourceRoot.getRelative(packageIdentifier.getSourceRoot()).equals(packageDirectory))
         && !filename.getBaseName().equals("WORKSPACE")) {
       throw new IllegalArgumentException(
           "Invalid BUILD file name for package '" + packageIdentifier + "': " + filename);
@@ -347,7 +342,7 @@ public class Package {
    * Returns the source root (a directory) beneath which this package's BUILD file was found.
    *
    * <p> Assumes invariant:
-   * {@code getSourceRoot().getRelative(packageId.getPathFragment()).equals(getPackageDirectory())}
+   * {@code getSourceRoot().getRelative(packageId.getSourceRoot()).equals(getPackageDirectory())}
    */
   public Path getSourceRoot() {
     return sourceRoot;
@@ -397,7 +392,10 @@ public class Package {
   public Map<String, String> getAllMakeVariables(String platform) {
     ImmutableMap.Builder<String, String> map = ImmutableMap.builder();
     for (String var : makeEnv.getBindings().keySet()) {
-      map.put(var, makeEnv.lookup(var, platform));
+      String value = makeEnv.lookup(var, platform);
+      if (value != null) {
+        map.put(var, value);
+      }
     }
     return map.build();
   }
@@ -586,9 +584,7 @@ public class Package {
     return defaultDeprecation;
   }
 
-  /**
-   * Gets the default header checking mode.
-   */
+  /** Gets the default header checking mode. */
   public String getDefaultHdrsCheck() {
     return defaultHdrsCheck != null ? defaultHdrsCheck : "strict";
   }
@@ -904,9 +900,7 @@ public class Package {
       return this;
     }
 
-    /**
-     * Sets the default value of copts. Rule-level copts will append to this.
-     */
+    /** Sets the default value of copts. Rule-level copts will append to this. */
     public Builder setDefaultCopts(List<String> defaultCopts) {
       this.defaultCopts = defaultCopts;
       return this;
@@ -1010,7 +1004,32 @@ public class Package {
         RuleClass ruleClass,
         Location location,
         AttributeContainer attributeContainer) {
-      return new Rule(pkg, label, ruleClass, location, attributeContainer);
+      return new Rule(
+          pkg,
+          label,
+          ruleClass,
+          location,
+          attributeContainer);
+    }
+
+    /**
+     * Same as {@link #createRule(Label, RuleClass, Location, AttributeContainer)}, except
+     * allows specifying an {@link ImplicitOutputsFunction} override. Only use if you know what
+     * you're doing.
+     */
+    Rule createRule(
+        Label label,
+        RuleClass ruleClass,
+        Location location,
+        AttributeContainer attributeContainer,
+        ImplicitOutputsFunction implicitOutputsFunction) {
+      return new Rule(
+          pkg,
+          label,
+          ruleClass,
+          location,
+          attributeContainer,
+          implicitOutputsFunction);
     }
 
     /**
@@ -1205,9 +1224,13 @@ public class Package {
       }
     }
 
-    void addRule(Rule rule) throws NameConflictException {
+    /**
+     * Same as {@link #addRule}, except with no name conflict checks.
+     *
+     * <p>Don't call this function unless you know what you're doing.
+     */
+    void addRuleUnchecked(Rule rule) {
       Preconditions.checkArgument(rule.getPackage() == pkg);
-      checkForConflicts(rule);
       // Now, modify the package:
       for (OutputFile outputFile : rule.getOutputFiles()) {
         targets.put(outputFile.getName(), outputFile);
@@ -1225,7 +1248,12 @@ public class Package {
       }
     }
 
-    private Builder beforeBuild() {
+    void addRule(Rule rule) throws NameConflictException, InterruptedException {
+      checkForConflicts(rule);
+      addRuleUnchecked(rule);
+    }
+
+    private Builder beforeBuild(boolean discoverAssumedInputFiles) throws InterruptedException {
       Preconditions.checkNotNull(pkg);
       Preconditions.checkNotNull(filename);
       Preconditions.checkNotNull(buildFileLabel);
@@ -1242,15 +1270,17 @@ public class Package {
 
       List<Rule> rules = Lists.newArrayList(getTargets(Rule.class));
 
-      // All labels mentioned in a rule that refer to an unknown target in the
-      // current package are assumed to be InputFiles, so let's create them:
-      for (final Rule rule : rules) {
-        AggregatingAttributeMapper.of(rule).visitLabels(new AcceptsLabelAttribute() {
-          @Override
-          public void acceptLabelAttribute(Label label, Attribute attribute) {
-            createInputFileMaybe(label, rule.getAttributeLocation(attribute.getName()));
-          }
-        });
+      if (discoverAssumedInputFiles) {
+        // All labels mentioned in a rule that refer to an unknown target in the
+        // current package are assumed to be InputFiles, so let's create them:
+        for (final Rule rule : rules) {
+          AggregatingAttributeMapper.of(rule).visitLabels(new AcceptsLabelAttribute() {
+            @Override
+            public void acceptLabelAttribute(Label label, Attribute attribute) {
+              createInputFileMaybe(label, rule.getAttributeLocation(attribute.getName()));
+            }
+          });
+        }
       }
 
       // "test_suite" rules have the idiosyncratic semantics of implicitly
@@ -1278,11 +1308,11 @@ public class Package {
     }
 
     /** Intended for use by {@link com.google.devtools.build.lib.skyframe.PackageFunction} only. */
-    public Builder buildPartial() {
+    public Builder buildPartial() throws InterruptedException {
       if (alreadyBuilt) {
         return this;
       }
-      return beforeBuild();
+      return beforeBuild(/*discoverAssumedInputFiles=*/ true);
     }
 
     /**
@@ -1326,11 +1356,19 @@ public class Package {
       return externalPackageData;
     }
 
-    public Package build() {
+    public Package build() throws InterruptedException {
+      return build(/*discoverAssumedInputFiles=*/ true);
+    }
+
+    /**
+     * Build the package, optionally adding any labels in the package not already associated with
+     * a target as an input file.
+     */
+    public Package build(boolean discoverAssumedInputFiles) throws InterruptedException {
       if (alreadyBuilt) {
         return pkg;
       }
-      beforeBuild();
+      beforeBuild(discoverAssumedInputFiles);
       return finishBuild();
     }
 
@@ -1354,14 +1392,15 @@ public class Package {
     }
 
     /**
-     * Precondition check for addRule.  We must maintain these invariants of the
-     * package:
-     * - Each name refers to at most one target.
-     * - No rule with errors is inserted into the package.
-     * - The generating rule of every output file in the package must itself be
-     *   in the package.
+     * Precondition check for addRule. We must maintain these invariants of the package:
+     *
+     * <ul>
+     * <li>Each name refers to at most one target.
+     * <li>No rule with errors is inserted into the package.
+     * <li>The generating rule of every output file in the package must itself be in the package.
+     * </ul>
      */
-    private void checkForConflicts(Rule rule) throws NameConflictException {
+    private void checkForConflicts(Rule rule) throws NameConflictException, InterruptedException {
       String name = rule.getName();
       Target existing = targets.get(name);
       if (existing != null) {
@@ -1406,17 +1445,15 @@ public class Package {
     }
 
     /**
-     * A utility method that checks for conflicts between
-     * input file names and output file names for a rule from a build
-     * file.
-     * @param rule the rule whose inputs and outputs are
-     *       to be checked for conflicts.
-     * @param outputFiles a set containing the names of output
-     *       files to be generated by the rule.
+     * A utility method that checks for conflicts between input file names and output file names for
+     * a rule from a build file.
+     *
+     * @param rule the rule whose inputs and outputs are to be checked for conflicts.
+     * @param outputFiles a set containing the names of output files to be generated by the rule.
      * @throws NameConflictException if a conflict is found.
      */
     private void checkForInputOutputConflicts(Rule rule, Set<String> outputFiles)
-        throws NameConflictException {
+        throws NameConflictException, InterruptedException {
       PathFragment packageFragment = rule.getLabel().getPackageFragment();
       for (Label inputLabel : rule.getLabels()) {
         if (packageFragment.equals(inputLabel.getPackageFragment())

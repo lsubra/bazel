@@ -20,14 +20,14 @@ import static org.junit.Assert.assertSame;
 
 import com.google.devtools.build.lib.vfs.PathFragment;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests for {@link PackageIdentifier}.
@@ -39,7 +39,7 @@ public class PackageIdentifierTest {
     PackageIdentifier fooA = PackageIdentifier.parse("@foo//a");
     assertThat(fooA.getRepository().strippedName()).isEqualTo("foo");
     assertThat(fooA.getPackageFragment().getPathString()).isEqualTo("a");
-    assertThat(fooA.getRepository().getPathFragment()).isEqualTo(
+    assertThat(fooA.getRepository().getSourceRoot()).isEqualTo(
         new PathFragment("external/foo"));
 
     PackageIdentifier absoluteA = PackageIdentifier.parse("//a");
@@ -51,9 +51,9 @@ public class PackageIdentifierTest {
     assertThat(plainA.getPackageFragment().getPathString()).isEqualTo("a");
 
     PackageIdentifier mainA = PackageIdentifier.parse("@//a");
-    assertThat(mainA.getRepository()).isEqualTo(PackageIdentifier.MAIN_REPOSITORY_NAME);
+    assertThat(mainA.getRepository()).isEqualTo(RepositoryName.MAIN);
     assertThat(mainA.getPackageFragment().getPathString()).isEqualTo("a");
-    assertThat(mainA.getRepository().getPathFragment()).isEqualTo(PathFragment.EMPTY_FRAGMENT);
+    assertThat(mainA.getRepository().getSourceRoot()).isEqualTo(PathFragment.EMPTY_FRAGMENT);
   }
 
   @Test

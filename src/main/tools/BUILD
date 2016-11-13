@@ -1,26 +1,14 @@
 package(default_visibility = ["//src:__subpackages__"])
 
-cc_library(
-    name = "network-tools",
-    srcs = ["network-tools.c"],
-    hdrs = ["network-tools.h"],
-    copts = ["-std=c99"],
-    deps = [":process-tools"],
-)
-
-cc_library(
-    name = "process-tools",
-    srcs = ["process-tools.c"],
-    hdrs = ["process-tools.h"],
-    copts = ["-std=c99"],
-)
-
 cc_binary(
     name = "process-wrapper",
-    srcs = ["process-wrapper.c"],
+    srcs = [
+        "process-tools.c",
+        "process-tools.h",
+        "process-wrapper.c",
+    ],
     copts = ["-std=c99"],
     linkopts = ["-lm"],
-    deps = [":process-tools"],
 )
 
 cc_binary(
@@ -29,26 +17,24 @@ cc_binary(
 )
 
 cc_binary(
-    name = "namespace-sandbox",
+    name = "linux-sandbox",
     srcs = select({
-        "//src:darwin": ["namespace-sandbox-dummy.c"],
-        "//src:darwin_x86_64": ["namespace-sandbox-dummy.c"],
-        "//src:freebsd": ["namespace-sandbox-dummy.c"],
-        "//src:windows": ["namespace-sandbox-dummy.c"],
-        "//conditions:default": ["namespace-sandbox.c"],
-    }),
-    copts = ["-std=c99"],
-    linkopts = ["-lm"],
-    deps = select({
-        "//src:darwin": [],
-        "//src:darwin_x86_64": [],
-        "//src:freebsd": [],
-        "//src:windows": [],
+        "//src:darwin": ["dummy-sandbox.c"],
+        "//src:darwin_x86_64": ["dummy-sandbox.c"],
+        "//src:freebsd": ["dummy-sandbox.c"],
+        "//src:windows": ["dummy-sandbox.c"],
+        "//src:windows_msvc": ["dummy-sandbox.c"],
         "//conditions:default": [
-            ":process-tools",
-            ":network-tools",
+            "linux-sandbox.cc",
+            "linux-sandbox.h",
+            "linux-sandbox-options.cc",
+            "linux-sandbox-options.h",
+            "linux-sandbox-pid1.cc",
+            "linux-sandbox-pid1.h",
+            "linux-sandbox-utils.h",
         ],
     }),
+    linkopts = ["-lm"],
 )
 
 filegroup(

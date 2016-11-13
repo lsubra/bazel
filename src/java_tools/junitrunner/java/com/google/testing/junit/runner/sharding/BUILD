@@ -13,14 +13,15 @@ java_library(
     srcs = glob(["*.java"]),
     deps = [
         "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/sharding/api",
-        "//third_party:dagger",
-        "//third_party:guava",
+        "//src/java_tools/junitrunner/java/com/google/testing/junit/runner/util",
         "//third_party:jsr305",
+        "//third_party:jsr330_inject",
         "//third_party:junit4",
     ],
 )
 
 filegroup(
     name = "srcs",
+    testonly = 0,  # All srcs should be not test only, overwrite package default.
     srcs = glob(["**"]),
 )

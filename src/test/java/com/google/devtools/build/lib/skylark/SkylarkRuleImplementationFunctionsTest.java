@@ -28,11 +28,13 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.Runfiles;
+import com.google.devtools.build.lib.analysis.SkylarkProviders;
 import com.google.devtools.build.lib.analysis.actions.FileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.actions.TemplateExpansionAction;
 import com.google.devtools.build.lib.analysis.actions.TemplateExpansionAction.Substitution;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
 import com.google.devtools.build.lib.rules.SkylarkRuleContext;
 import com.google.devtools.build.lib.skylark.util.SkylarkTestCase;
 import com.google.devtools.build.lib.skylarkinterface.Param;
@@ -46,31 +48,41 @@ import com.google.devtools.build.lib.syntax.Runtime;
 import com.google.devtools.build.lib.syntax.SkylarkList.MutableList;
 import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
 import com.google.devtools.build.lib.testutil.MoreAsserts;
-
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-
+import com.google.devtools.build.lib.util.OsUtils;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Tests for SkylarkRuleImplementationFunctions.
  */
 @RunWith(JUnit4.class)
 public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
+  @Rule public ExpectedException thrown = ExpectedException.none();
 
   @SkylarkSignature(
     name = "mock",
     documented = false,
-    mandatoryPositionals = {@Param(name = "mandatory", doc = "")},
-    optionalPositionals = {@Param(name = "optional", doc = "")},
-    mandatoryNamedOnly = {@Param(name = "mandatory_key", doc = "")},
-    optionalNamedOnly = {@Param(name = "optional_key", doc = "", defaultValue = "'x'")},
+    parameters = {
+      @Param(name = "mandatory", doc = ""),
+      @Param(name = "optional", doc = "", defaultValue = "None"),
+      @Param(name = "mandatory_key", doc = "", positional = false, named = true),
+      @Param(
+        name = "optional_key",
+        doc = "",
+        defaultValue = "'x'",
+        positional = false,
+        named = true
+      )
+    },
     useEnvironment = true
   )
   private BuiltinFunction mockFunc;
@@ -83,7 +95,7 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
   BuiltinFunction throwFunction;
 
   @Before
-  public final void createBuildFile() throws Exception  {
+  public final void createBuildFile() throws Exception {
     scratch.file(
         "foo/BUILD",
         "genrule(name = 'foo',",
@@ -124,7 +136,10 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
         new BuiltinFunction("mock") {
           @SuppressWarnings("unused")
           public Object invoke(
-              Object mandatory, Object optional, Object mandatoryKey, Object optionalKey,
+              Object mandatory,
+              Object optional,
+              Object mandatoryKey,
+              Object optionalKey,
               Environment env) {
             return EvalUtils.optionMap(
                 env,
@@ -228,8 +243,8 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
                 ruleContext.getRuleContext().getAnalysisEnvironment().getRegisteredActions());
     assertArtifactFilenames(action.getInputs(), "a.txt", "b.img");
     assertArtifactFilenames(action.getOutputs(), "a.txt", "b.img");
-    MoreAsserts.assertContainsSublist(action.getArguments(),
-        "-c", "dummy_command", "", "--a", "--b");
+    MoreAsserts.assertContainsSublist(
+        action.getArguments(), "-c", "dummy_command", "", "--a", "--b");
     assertEquals("DummyMnemonic", action.getMnemonic());
     assertEquals("dummy_message", action.getProgressMessage());
     assertEquals(targetConfig.getLocalShellEnvironment(), action.getEnvironment());
@@ -407,7 +422,6 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
         "      inputs = ctx.files.srcs,",
         "      mnemonic = 'EA',",
         "  )",
-
         "empty_action_rule = rule(",
         "    implementation = _impl,",
         "    attrs = {",
@@ -420,11 +434,9 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
         "load('/test/empty', 'empty_action_rule')",
         "empty_action_rule(name = 'my_empty_action',",
         "                srcs = ['foo.in', 'other_foo.in'])",
-
         "action_listener(name = 'listener',",
         "                mnemonics = ['EA'],",
         "                extra_actions = [':extra'])",
-
         "extra_action(name = 'extra',",
         "             cmd='')");
 
@@ -478,15 +490,16 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
     assertMatches(
         "Expanded string",
         expectedPattern,
-        (String) evalRuleContextCode(
-            ruleContext, String.format("ruleContext.expand_location('$(%s)')", command)));
+        (String)
+            evalRuleContextCode(
+                ruleContext, String.format("ruleContext.expand_location('$(%s)')", command)));
   }
 
   private void assertMatches(String description, String expectedPattern, String computedValue)
       throws Exception {
     assertTrue(
-        Printer.format("%s %r did not match pattern '%s'",
-            description, computedValue, expectedPattern),
+        Printer.format(
+            "%s %r did not match pattern '%s'", description, computedValue, expectedPattern),
         Pattern.matches(expectedPattern, computedValue));
   }
 
@@ -500,7 +513,7 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
     @SuppressWarnings("unchecked")
     List<String> argv = (List<String>) (List<?>) (MutableList) lookup("argv");
     assertThat(argv).hasSize(3);
-    assertMatches("argv[0]", "^.*/bash$", argv.get(0));
+    assertMatches("argv[0]", "^.*/bash" + OsUtils.executableExtension() + "$", argv.get(0));
     assertThat(argv.get(1)).isEqualTo("-c");
     assertThat(argv.get(2)).isEqualTo("I got the World on a string");
   }
@@ -535,11 +548,11 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
     @SuppressWarnings("unchecked")
     List<String> argv = (List<String>) (List<?>) (MutableList) lookup("argv");
     assertThat(argv).hasSize(3);
-    assertMatches("argv[0]", "^.*/bash$", argv.get(0));
+    assertMatches("argv[0]", "^.*/bash" + OsUtils.executableExtension() + "$", argv.get(0));
     assertThat(argv.get(1)).isEqualTo("-c");
     assertMatches("argv[2]", "A.*/mytool .*/mytool.sh B.*file3.dat", argv.get(2));
   }
-  
+
   @Test
   public void testResolveCommandExecutionRequirements() throws Exception {
     // Tests that requires-darwin execution requirements result in the usage of /bin/bash.
@@ -565,7 +578,7 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
     @SuppressWarnings("unchecked")
     List<String> argv = (List<String>) (List<?>) (MutableList) lookup("argv");
     assertThat(argv).hasSize(2);
-    assertMatches("argv[0]", "^.*/bash$", argv.get(0));
+    assertMatches("argv[0]", "^.*/bash" + OsUtils.executableExtension() + "$", argv.get(0));
     assertMatches("argv[1]", "^.*/resolve_me[.]script[.]sh$", argv.get(1));
   }
 
@@ -818,6 +831,297 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
   }
 
   @Test
+  public void testDeclaredProviders() throws Exception {
+    scratch.file(
+        "test/foo.bzl",
+        "foo_provider = provider()",
+        "foobar_provider = provider()",
+        "def _impl(ctx):",
+        "    foo = foo_provider()",
+        "    foobar = foobar_provider()",
+        "    return [foo, foobar]",
+        "foo_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       \"srcs\": attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/bar.bzl",
+        "load(':foo.bzl', 'foo_provider')",
+        "def _impl(ctx):",
+        "    dep = ctx.attr.deps[0]",
+        "    provider = dep[foo_provider]",     // The goal is to test this object
+        "    return struct(proxy = provider)",  // so we return it here
+        "bar_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       'srcs': attr.label_list(allow_files=True),",
+        "       'deps': attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load(':foo.bzl', 'foo_rule')",
+        "load(':bar.bzl', 'bar_rule')",
+        "foo_rule(name = 'dep_rule')",
+        "bar_rule(name = 'my_rule', deps = [':dep_rule'])");
+    ConfiguredTarget configuredTarget = getConfiguredTarget("//test:my_rule");
+    Object provider = configuredTarget.getProvider(SkylarkProviders.class).getValue("proxy");
+    assertThat(provider).isInstanceOf(SkylarkClassObject.class);
+    assertThat(((SkylarkClassObject) provider).getConstructor().getKey().getExportedName())
+        .isEqualTo("foo_provider");
+  }
+
+  @Test
+  public void testDeclaredProvidersAliasTarget() throws Exception {
+    scratch.file(
+        "test/foo.bzl",
+        "foo_provider = provider()",
+        "foobar_provider = provider()",
+        "def _impl(ctx):",
+        "    foo = foo_provider()",
+        "    foobar = foobar_provider()",
+        "    return [foo, foobar]",
+        "foo_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       \"srcs\": attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/bar.bzl",
+        "load(':foo.bzl', 'foo_provider')",
+        "def _impl(ctx):",
+        "    dep = ctx.attr.deps[0]",
+        "    provider = dep[foo_provider]",     // The goal is to test this object
+        "    return struct(proxy = provider)",  // so we return it here
+        "bar_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       'srcs': attr.label_list(allow_files=True),",
+        "       'deps': attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load(':foo.bzl', 'foo_rule')",
+        "load(':bar.bzl', 'bar_rule')",
+        "foo_rule(name = 'foo_rule')",
+        "alias(name = 'dep_rule', actual=':foo_rule')",
+        "bar_rule(name = 'my_rule', deps = [':dep_rule'])");
+    ConfiguredTarget configuredTarget = getConfiguredTarget("//test:my_rule");
+    Object provider = configuredTarget.getProvider(SkylarkProviders.class).getValue("proxy");
+    assertThat(provider).isInstanceOf(SkylarkClassObject.class);
+    assertThat(((SkylarkClassObject) provider).getConstructor().getKey().getExportedName())
+        .isEqualTo("foo_provider");
+  }
+
+  @Test
+  public void testDeclaredProvidersWrongKey() throws Exception {
+    scratch.file(
+        "test/foo.bzl",
+        "foo_provider = provider()",
+        "unused_provider = provider()",
+        "def _impl(ctx):",
+        "    foo = foo_provider()",
+        "    return [foo]",
+        "foo_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       \"srcs\": attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/bar.bzl",
+        "load(':foo.bzl', 'unused_provider')",
+        "def _impl(ctx):",
+        "    dep = ctx.attr.deps[0]",
+        "    provider = dep[unused_provider]",  // Should throw an error here
+        "bar_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       'srcs': attr.label_list(allow_files=True),",
+        "       'deps': attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load(':foo.bzl', 'foo_rule')",
+        "load(':bar.bzl', 'bar_rule')",
+        "foo_rule(name = 'dep_rule')",
+        "bar_rule(name = 'my_rule', deps = [':dep_rule'])");
+
+    try {
+      getConfiguredTarget("//test:my_rule");
+      fail();
+    } catch (AssertionError expected) {
+      assertThat(expected.getMessage()).contains("Object of type Target doesn't "
+          + "contain declared provider unused_provider");
+    }
+  }
+
+  @Test
+  public void testDeclaredProvidersInvalidKey() throws Exception {
+    scratch.file(
+        "test/foo.bzl",
+        "foo_provider = provider()",
+        "def _impl(ctx):",
+        "    foo = foo_provider()",
+        "    return [foo]",
+        "foo_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       \"srcs\": attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/bar.bzl",
+        "def _impl(ctx):",
+        "    dep = ctx.attr.deps[0]",
+        "    provider = dep['foo_provider']",  // Should throw an error here
+        "bar_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       'srcs': attr.label_list(allow_files=True),",
+        "       'deps': attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load(':foo.bzl', 'foo_rule')",
+        "load(':bar.bzl', 'bar_rule')",
+        "foo_rule(name = 'dep_rule')",
+        "bar_rule(name = 'my_rule', deps = [':dep_rule'])");
+
+    try {
+      getConfiguredTarget("//test:my_rule");
+      fail();
+    } catch (AssertionError expected) {
+      assertThat(expected.getMessage()).contains("Type Target only supports indexing "
+          + "by object constructors, got string instead");
+    }
+  }
+
+  @Test
+  public void testDeclaredProvidersFileTarget() throws Exception {
+    scratch.file(
+        "test/bar.bzl",
+        "unused_provider = provider()",
+        "def _impl(ctx):",
+        "    src = ctx.attr.srcs[0]",
+        "    provider = src[unused_provider]",  // Should throw an error here
+        "bar_rule = rule(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "       'srcs': attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load(':bar.bzl', 'bar_rule')",
+        "bar_rule(name = 'my_rule', srcs = ['input.txt'])");
+
+    try {
+      getConfiguredTarget("//test:my_rule");
+      fail();
+    } catch (AssertionError expected) {
+      assertThat(expected.getMessage()).contains("Object of type Target doesn't "
+          + "contain declared provider unused_provider");
+    }
+  }
+
+  @Test
+  public void testDeclaredProvidersInOperator() throws Exception {
+    scratch.file(
+        "test/foo.bzl",
+        "foo_provider = provider()",
+        "bar_provider = provider()",
+        "",
+        "def _inner_impl(ctx):",
+        "    foo = foo_provider()",
+        "    return [foo]",
+        "inner_rule = rule(",
+        "    implementation = _inner_impl,",
+        ")",
+        "",
+        "def _outer_impl(ctx):",
+        "    dep = ctx.attr.deps[0]",
+        "    return struct(",
+        "        foo = (foo_provider in dep),",  // Should be true
+        "        bar = (bar_provider in dep),",  // Should be false
+        "    )",
+        "outer_rule = rule(",
+        "    implementation = _outer_impl,",
+        "    attrs = {",
+        "       'deps': attr.label_list(),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load(':foo.bzl', 'inner_rule', 'outer_rule')",
+        "inner_rule(name = 'dep_rule')",
+        "outer_rule(name = 'my_rule', deps = [':dep_rule'])");
+
+    ConfiguredTarget configuredTarget = getConfiguredTarget("//test:my_rule");
+    Object foo = configuredTarget.getProvider(SkylarkProviders.class).getValue("foo");
+    assertThat(foo).isInstanceOf(Boolean.class);
+    assertThat((Boolean) foo).isTrue();
+    Object bar = configuredTarget.getProvider(SkylarkProviders.class).getValue("bar");
+    assertThat(bar).isInstanceOf(Boolean.class);
+    assertThat((Boolean) bar).isFalse();
+  }
+
+  @Test
+  public void testDeclaredProvidersInOperatorInvalidKey() throws Exception {
+    scratch.file(
+        "test/foo.bzl",
+        "foo_provider = provider()",
+        "bar_provider = provider()",
+        "",
+        "def _inner_impl(ctx):",
+        "    foo = foo_provider()",
+        "    return [foo]",
+        "inner_rule = rule(",
+        "    implementation = _inner_impl,",
+        ")",
+        "",
+        "def _outer_impl(ctx):",
+        "    dep = ctx.attr.deps[0]",
+        "    'foo_provider' in dep",  // Should throw an error here
+        "outer_rule = rule(",
+        "    implementation = _outer_impl,",
+        "    attrs = {",
+        "       'deps': attr.label_list(),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load(':foo.bzl', 'inner_rule', 'outer_rule')",
+        "inner_rule(name = 'dep_rule')",
+        "outer_rule(name = 'my_rule', deps = [':dep_rule'])");
+
+    try {
+      getConfiguredTarget("//test:my_rule");
+      fail();
+    } catch (AssertionError expected) {
+      assertThat(expected.getMessage()).contains("Type Target only supports querying by object "
+          + "constructors, got string instead");
+    }
+  }
+
+  @Test
   public void testFilesForFileConfiguredTarget() throws Exception {
     Object result =
         evalRuleContextCode(createRuleContext("//foo:bar"), "ruleContext.attr.srcs[0].files");
@@ -838,7 +1142,7 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
   @Test
   public void testBinDirPath() throws Exception {
     SkylarkRuleContext ctx = createRuleContext("//foo:bar");
-    Object result = evalRuleContextCode(ctx, "ruleContext.configuration.bin_dir.path");
+    Object result = evalRuleContextCode(ctx, "ruleContext.bin_dir.path");
     assertEquals(ctx.getConfiguration().getBinFragment().getPathString(), result);
   }
 
@@ -855,7 +1159,7 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
     String java = (String) evalRuleContextCode(ctx, "ruleContext.var['JAVA']");
     // Get the last path segment
     java = java.substring(java.lastIndexOf('/'));
-    assertEquals("/java", java);
+    assertEquals("/java" + OsUtils.executableExtension(), java);
   }
 
   @Test
@@ -906,9 +1210,7 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
         fail(
             String.format(
                 "Found %d error(s), but none with the expected message '%s'. First error: '%s'",
-                count,
-                errorMsg,
-                first));
+                count, errorMsg, first));
       }
     } finally {
       eventCollector.clear();
@@ -951,7 +1253,8 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
 
   @Test
   public void testGlobInImplicitOutputs() throws Exception {
-    scratch.file("test/glob.bzl",
+    scratch.file(
+        "test/glob.bzl",
         "def _impl(ctx):",
         "  ctx.empty_action(",
         "    inputs = [],",
@@ -962,7 +1265,8 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
         "  implementation = _impl,",
         "  outputs = _foo,",
         ")");
-    scratch.file("test/BUILD",
+    scratch.file(
+        "test/BUILD",
         "load('/test/glob', 'glob_rule')",
         "glob_rule(name = 'my_glob',",
         "  srcs = ['foo.bar', 'other_foo.bar'])");
@@ -973,15 +1277,9 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
 
   @Test
   public void testRuleFromBzlFile() throws Exception {
-    scratch.file("test/rule.bzl",
-        "def _impl(ctx): return",
-        "foo = rule(implementation = _impl)");
-    scratch.file("test/ext.bzl",
-        "load('//test:rule.bzl', 'foo')",
-        "a = 1",
-        "foo(name = 'x')");
-    scratch.file("test/BUILD",
-        "load('//test:ext.bzl', 'a')");
+    scratch.file("test/rule.bzl", "def _impl(ctx): return", "foo = rule(implementation = _impl)");
+    scratch.file("test/ext.bzl", "load('//test:rule.bzl', 'foo')", "a = 1", "foo(name = 'x')");
+    scratch.file("test/BUILD", "load('//test:ext.bzl', 'a')");
     reporter.removeHandler(failFastHandler);
     getConfiguredTarget("//test:x");
     assertContainsEvent("Cannot instantiate a rule when loading a .bzl file");
@@ -989,7 +1287,8 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
 
   @Test
   public void testImplicitOutputsFromGlob() throws Exception {
-    scratch.file("test/glob.bzl",
+    scratch.file(
+        "test/glob.bzl",
         "def _impl(ctx):",
         "  outs = ctx.outputs",
         "  for i in ctx.attr.srcs:",
@@ -1013,13 +1312,36 @@ public class SkylarkRuleImplementationFunctionsTest extends SkylarkTestCase {
         ")");
     scratch.file("test/a.bar", "a");
     scratch.file("test/b.bar", "b");
-    scratch.file("test/BUILD",
+    scratch.file(
+        "test/BUILD",
         "load('/test/glob', 'glob_rule')",
         "glob_rule(name = 'my_glob', srcs = glob(['*.bar']))");
     ConfiguredTarget ct = getConfiguredTarget("//test:my_glob");
     assertThat(ct).isNotNull();
     assertThat(getGeneratingAction(getBinArtifact("a.bar.out", ct))).isNotNull();
     assertThat(getGeneratingAction(getBinArtifact("b.bar.out", ct))).isNotNull();
+  }
+
+  @Test
+  public void testBuiltInFunctionAsRuleImplementation() throws Exception {
+    // Using built-in functions as rule implementations shouldn't cause runtime errors
+    scratch.file(
+        "test/rule.bzl",
+        "silly_rule = rule(",
+        "    implementation = int,",
+        "    attrs = {",
+        "       \"srcs\": attr.label_list(allow_files=True),",
+        "    }",
+        ")"
+    );
+    scratch.file(
+        "test/BUILD",
+        "load('/test/rule', 'silly_rule')",
+        "silly_rule(name = 'silly')");
+    thrown.handleAssertionErrors(); // Compatibility with JUnit 4.11
+    thrown.expect(AssertionError.class);
+    thrown.expectMessage("//test:silly is not of type string or int or bool");
+    getConfiguredTarget("//test:silly");
   }
 
   private void setupThrowFunction(BuiltinFunction func) throws Exception {

@@ -29,10 +29,10 @@ import com.google.devtools.build.lib.analysis.SkyframePackageRootResolver;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.config.DefaultsPackage;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Reporter;
+import com.google.devtools.build.lib.exec.ActionInputPrefetcher;
 import com.google.devtools.build.lib.exec.OutputService;
 import com.google.devtools.build.lib.packages.NoSuchThingException;
 import com.google.devtools.build.lib.packages.Target;
@@ -51,19 +51,21 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.OptionPriority;
+import com.google.devtools.common.options.OptionsClassProvider;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingException;
 import com.google.devtools.common.options.OptionsProvider;
-
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.annotation.Nullable;
 
 /**
  * Encapsulates the state needed for a single command. The environment is dropped when the current
@@ -74,16 +76,21 @@ public final class CommandEnvironment {
   private final BlazeWorkspace workspace;
   private final BlazeDirectories directories;
 
-  private final UUID commandId;  // Unique identifier for the command being run
+  private UUID commandId;  // Unique identifier for the command being run
   private final Reporter reporter;
   private final EventBus eventBus;
   private final BlazeModule.ModuleEnvironment blazeModuleEnvironment;
-  private final Map<String, String> clientEnv = new HashMap<>();
+  private final Map<String, String> clientEnv = new TreeMap<>();
+  private final Set<String> visibleClientEnv = new TreeSet<>();
   private final TimestampGranularityMonitor timestampGranularityMonitor;
+  private final Thread commandThread;
+
+  private String[] crashData;
 
   private PathFragment relativeWorkingDirectory = PathFragment.EMPTY_FRAGMENT;
   private long commandStartTime;
   private OutputService outputService;
+  private ImmutableList<ActionInputPrefetcher> actionInputPrefetchers = ImmutableList.of();
   private Path workingDirectory;
 
   private AtomicReference<AbruptExitException> pendingException = new AtomicReference<>();
@@ -100,17 +107,29 @@ public final class CommandEnvironment {
 
     @Override
     public void exit(AbruptExitException exception) {
-      pendingException.compareAndSet(null, exception);
+      Preconditions.checkNotNull(exception);
+      Preconditions.checkNotNull(exception.getExitCode());
+      if (pendingException.compareAndSet(null, exception)) {
+        // There was no exception, so we're the first one to ask for an exit. Interrupt the command.
+        commandThread.interrupt();
+      }
     }
   }
 
-  CommandEnvironment(BlazeRuntime runtime, BlazeWorkspace workspace, EventBus eventBus) {
+  /**
+   * Creates a new command environment which can be used for executing commands for the given
+   * runtime in the given workspace, which will publish events on the given eventBus. The
+   * commandThread passed is interrupted when a module requests an early exit.
+   */
+  CommandEnvironment(
+      BlazeRuntime runtime, BlazeWorkspace workspace, EventBus eventBus, Thread commandThread) {
     this.runtime = runtime;
     this.workspace = workspace;
     this.directories = workspace.getDirectories();
-    this.commandId = UUID.randomUUID();
+    this.commandId = null; // Will be set once we get the client environment
     this.reporter = new Reporter();
     this.eventBus = eventBus;
+    this.commandThread = commandThread;
     this.blazeModuleEnvironment = new BlazeModuleEnvironment();
     this.timestampGranularityMonitor = new TimestampGranularityMonitor(runtime.getClock());
     // Record the command's starting time again, for use by
@@ -161,6 +180,21 @@ public final class CommandEnvironment {
     return Collections.unmodifiableMap(clientEnv);
   }
 
+  /**
+   * Return an ordered version of the client environment restricted to those variables whitelisted
+   * by the command-line options to be inheritable by actions.
+   */
+  public Map<String, String> getWhitelistedClientEnv() {
+    Map<String, String> visibleEnv = new TreeMap<>();
+    for (String var : visibleClientEnv) {
+      String value = clientEnv.get(var);
+      if (value != null) {
+        visibleEnv.put(var, value);
+      }
+    }
+    return Collections.unmodifiableMap(visibleEnv);
+  }
+
   @VisibleForTesting
   void updateClientEnv(List<Map.Entry<String, String>> clientEnvList, boolean ignoreClientEnv) {
     Preconditions.checkState(clientEnv.isEmpty());
@@ -170,6 +204,23 @@ public final class CommandEnvironment {
     for (Map.Entry<String, String> entry : env) {
       clientEnv.put(entry.getKey(), entry.getValue());
     }
+    // Try to set the clientId from the client environment.
+    if (commandId == null) {
+      String uuidString = clientEnv.get("BAZEL_INTERNAL_INVOCATION_ID");
+      if (uuidString != null) {
+        try {
+          commandId = UUID.fromString(uuidString);
+        } catch (IllegalArgumentException e) {
+          // String was malformed, so we will resort to generating a random UUID
+        }
+      }
+    }
+    if (commandId == null) {
+      // We have been provided with the client environment, but it didn't contain
+      // the invocation id; hence generate our own.
+      commandId = UUID.randomUUID();
+    }
+    setCommandIdInCrashData();
   }
 
   public TimestampGranularityMonitor getTimestampGranularityMonitor() {
@@ -203,6 +254,13 @@ public final class CommandEnvironment {
    * the build info.
    */
   public UUID getCommandId() {
+    if (commandId == null) {
+      // The commandId should not be requested before the beforeCommand is executed, as the
+      // commandId might be set through the client environment. However, to simplify testing,
+      // we set the id value before we throw the exception.
+      commandId = UUID.randomUUID();
+      throw new IllegalArgumentException("Build Id requested before client environment provided");
+    }
     return commandId;
   }
 
@@ -249,21 +307,6 @@ public final class CommandEnvironment {
   }
 
   /**
-   * Returns the output path associated with this Blaze server process..
-   */
-  public Path getOutputPath() {
-    return getDirectories().getOutputPath();
-  }
-
-  /**
-   * The directory in which blaze stores the server state - that is, the socket
-   * file and a log.
-   */
-  public Path getServerDirectory() {
-    return getOutputBase().getChild("server");
-  }
-
-  /**
    * Returns the execution root directory associated with this Blaze server
    * process. This is where all input and output files visible to the actual
    * build reside.
@@ -290,20 +333,41 @@ public final class CommandEnvironment {
     return outputService;
   }
 
+  public ImmutableList<ActionInputPrefetcher> getActionInputPrefetchers() {
+    return actionInputPrefetchers;
+  }
+
   public ActionCache getPersistentActionCache() throws IOException {
     return workspace.getPersistentActionCache(reporter);
   }
 
   /**
    * An array of String values useful if Blaze crashes.
-   * For now, just returns the size of the action cache and the build id.
+   * For now, just returns the size of the action cache and the build id; the latter as
+   * soon as it is determined.
    */
   public String[] getCrashData() {
-    return new String[]{
+    if (crashData == null) {
+      String buildId;
+      if (commandId == null) {
+        buildId = " (build id not set yet)";
+      } else {
+        buildId = commandId + " (build id)";
+      }
+      crashData = new String[]{
         getFileSizeString(CompactPersistentActionCache.cacheFile(workspace.getCacheDirectory()),
                           "action cache"),
-        getCommandId() + " (build id)",
-    };
+        buildId,
+      };
+    }
+    return crashData;
+  }
+
+  private void setCommandIdInCrashData() {
+    // Update the command id in the crash data, if it is already generated
+    if (crashData != null && crashData.length >= 2) {
+      crashData[1] = getCommandId() + " (build id)";
+    }
   }
 
   private static String getFileSizeString(Path path, String type) {
@@ -328,6 +392,29 @@ public final class CommandEnvironment {
   }
 
   /**
+   * Prevents any further interruption of this command by modules, and returns the final exit code
+   * from modules, or null if no modules requested an abrupt exit.
+   *
+   * <p>Always returns the same value on subsequent calls.
+   */
+  @Nullable
+  private ExitCode finalizeExitCode() {
+    // Set the pending exception so that further calls to exit(AbruptExitException) don't lead to
+    // unwanted thread interrupts.
+    if (pendingException.compareAndSet(null, new AbruptExitException(null))) {
+      return null;
+    }
+    if (Thread.currentThread() == commandThread) {
+      // We may have interrupted the thread in the process, so clear the interrupted bit.
+      // Whether the command was interrupted or not, it's about to be over, so don't interrupt later
+      // things happening on this thread.
+      Thread.interrupted();
+    }
+    // Extract the exit code (it can be null if someone has already called finalizeExitCode()).
+    return getPendingExitCode();
+  }
+
+  /**
    * Hook method called by the BlazeCommandDispatcher right before the dispatch
    * of each command ends (while its outcome can still be modified).
    */
@@ -335,11 +422,29 @@ public final class CommandEnvironment {
     eventBus.post(new CommandPrecompleteEvent(originalExit));
     // If Blaze did not suffer an infrastructure failure, check for errors in modules.
     ExitCode exitCode = originalExit;
-    AbruptExitException exception = pendingException.get();
-    if (!originalExit.isInfrastructureFailure() && exception != null) {
-      exitCode = exception.getExitCode();
+    ExitCode newExitCode = finalizeExitCode();
+    if (!originalExit.isInfrastructureFailure() && newExitCode != null) {
+      exitCode = newExitCode;
     }
     return exitCode;
+  }
+
+  /**
+   * Returns the current exit code requested by modules, or null if no exit has been requested.
+   */
+  @Nullable
+  public ExitCode getPendingExitCode() {
+    AbruptExitException exception = getPendingException();
+    return exception == null ? null : exception.getExitCode();
+  }
+
+  /**
+   * Retrieves the exception currently queued by a Blaze module.
+   *
+   * <p>Prefer getPendingExitCode or throwPendingException where appropriate.
+   */
+  public AbruptExitException getPendingException() {
+    return pendingException.get();
   }
 
   /**
@@ -350,8 +455,12 @@ public final class CommandEnvironment {
    * the exception this way.
    */
   public void throwPendingException() throws AbruptExitException {
-    AbruptExitException exception = pendingException.get();
+    AbruptExitException exception = getPendingException();
     if (exception != null) {
+      if (Thread.currentThread() == commandThread) {
+        // Throwing this exception counts as the requested interruption. Clear the interrupted bit.
+        Thread.interrupted();
+      }
       throw exception;
     }
   }
@@ -362,15 +471,24 @@ public final class CommandEnvironment {
    *
    * @see DefaultsPackage
    */
-  public void setupPackageCache(PackageCacheOptions packageCacheOptions,
+  public void setupPackageCache(OptionsClassProvider options,
       String defaultsPackageContents) throws InterruptedException, AbruptExitException {
     SkyframeExecutor skyframeExecutor = getSkyframeExecutor();
     if (!skyframeExecutor.hasIncrementalState()) {
       skyframeExecutor.resetEvaluator();
     }
-    skyframeExecutor.sync(reporter, packageCacheOptions, getOutputBase(),
-        getWorkingDirectory(), defaultsPackageContents, commandId,
-        timestampGranularityMonitor);
+    skyframeExecutor.sync(
+        reporter,
+        options.getOptions(PackageCacheOptions.class),
+        getOutputBase(),
+        getWorkingDirectory(),
+        defaultsPackageContents,
+        getCommandId(),
+        // TODO(bazel-team): this optimization disallows rule-specified additional dependencies
+        // on the client environment!
+        getWhitelistedClientEnv(),
+        timestampGranularityMonitor,
+        options);
   }
 
   public void recordLastExecutionTime() {
@@ -397,15 +515,25 @@ public final class CommandEnvironment {
    * @throws AbruptExitException if this command is unsuitable to be run as specified
    */
   void beforeCommand(Command command, OptionsParser optionsParser,
-      CommonCommandOptions options, long execStartTimeNanos)
+      CommonCommandOptions options, long execStartTimeNanos, long waitTimeInMs)
       throws AbruptExitException {
     commandStartTime -= options.startupTime;
+    if (runtime.getStartupOptionsProvider().getOptions(BlazeServerStartupOptions.class).watchFS) {
+      try {
+        // TODO(ulfjack): Get rid of the startup option and drop this code.
+        optionsParser.parse("--watchfs");
+      } catch (OptionsParsingException e) {
+        // This should never happen.
+        throw new IllegalStateException(e);
+      }
+    }
 
     eventBus.post(new GotOptionsEvent(runtime.getStartupOptionsProvider(), optionsParser));
     throwPendingException();
 
     outputService = null;
     BlazeModule outputModule = null;
+    ImmutableList.Builder<ActionInputPrefetcher> prefetchersBuilder = ImmutableList.builder();
     for (BlazeModule module : runtime.getBlazeModules()) {
       OutputService moduleService = module.getOutputService();
       if (moduleService != null) {
@@ -417,7 +545,13 @@ public final class CommandEnvironment {
         outputService = moduleService;
         outputModule = module;
       }
+
+      ActionInputPrefetcher actionInputPrefetcher = module.getPrefetcher();
+      if (actionInputPrefetcher != null) {
+        prefetchersBuilder.add(actionInputPrefetcher);
+      }
     }
+    actionInputPrefetchers = prefetchersBuilder.build();
 
     SkyframeExecutor skyframeExecutor = getSkyframeExecutor();
     skyframeExecutor.setOutputService(outputService);
@@ -453,6 +587,17 @@ public final class CommandEnvironment {
         testEnv.put(entry.getKey(), entry.getValue());
       }
 
+      // Compute the set of environment variables that are whitelisted on the commandline
+      // for inheritence.
+      for (Map.Entry<String, String> entry :
+             optionsParser.getOptions(BuildConfiguration.Options.class).actionEnvironment) {
+        if (entry.getValue() == null) {
+          visibleClientEnv.add(entry.getKey());
+        } else {
+          visibleClientEnv.remove(entry.getKey());
+        }
+      }
+
       try {
         for (Map.Entry<String, String> entry : testEnv.entrySet()) {
           if (entry.getValue() == null) {
@@ -469,12 +614,10 @@ public final class CommandEnvironment {
         throw new IllegalStateException(e);
       }
     }
-    for (BlazeModule module : runtime.getBlazeModules()) {
-      module.handleOptions(optionsParser);
-    }
 
-    eventBus.post(
-        new CommandStartEvent(command.name(), commandId, getClientEnv(), workingDirectory));
+    eventBus.post(new CommandStartEvent(
+        command.name(), getCommandId(), getClientEnv(), workingDirectory, getDirectories(),
+        waitTimeInMs + options.waitTime));
   }
 
   /** Returns the name of the file system we are writing output to. */

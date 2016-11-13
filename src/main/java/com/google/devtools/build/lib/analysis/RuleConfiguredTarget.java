@@ -21,18 +21,17 @@ import com.google.devtools.build.lib.analysis.config.RunUnder;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.rules.SkylarkApiProvider;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
+import com.google.devtools.build.lib.packages.SkylarkClassObjectConstructor;
 import com.google.devtools.build.lib.util.Preconditions;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
+import javax.annotation.Nullable;
 
 /**
  * A {@link ConfiguredTarget} that is produced by a rule.
  *
  * <p>Created by {@link RuleConfiguredTargetBuilder}. There is an instance of this class for every
- * analyzed rule. For more information about how analysis works, see
- * {@link com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory}.
+ * analyzed rule. For more information about how analysis works, see {@link
+ * com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory}.
  */
 public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
   /**
@@ -47,31 +46,26 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
     DONT_CHECK
   }
 
-  private final ImmutableMap<Class<? extends TransitiveInfoProvider>, Object> providers;
+  private final TransitiveInfoProviderMap providers;
   private final ImmutableMap<Label, ConfigMatchingProvider> configConditions;
 
-  RuleConfiguredTarget(RuleContext ruleContext,
-      ImmutableMap<String, Object> skylarkProviders,
-      Map<Class<? extends TransitiveInfoProvider>, TransitiveInfoProvider> providers) {
+  RuleConfiguredTarget(
+      RuleContext ruleContext,
+      TransitiveInfoProviderMap providers,
+      SkylarkProviders skylarkProviders1) {
     super(ruleContext);
     // We don't use ImmutableMap.Builder here to allow augmenting the initial list of 'default'
     // providers by passing them in.
-    Map<Class<? extends TransitiveInfoProvider>, Object> providerBuilder = new LinkedHashMap<>();
-    providerBuilder.putAll(providers);
-    Preconditions.checkState(providerBuilder.containsKey(RunfilesProvider.class));
-    Preconditions.checkState(providerBuilder.containsKey(FileProvider.class));
-    Preconditions.checkState(providerBuilder.containsKey(FilesToRunProvider.class));
+    TransitiveInfoProviderMap.Builder providerBuilder = providers.toBuilder();
+    Preconditions.checkState(providerBuilder.contains(RunfilesProvider.class));
+    Preconditions.checkState(providerBuilder.contains(FileProvider.class));
+    Preconditions.checkState(providerBuilder.contains(FilesToRunProvider.class));
 
     // Initialize every SkylarkApiProvider
-    for (Object provider : skylarkProviders.values()) {
-      if (provider instanceof SkylarkApiProvider) {
-        ((SkylarkApiProvider) provider).init(this);
-      }
-    }
+    skylarkProviders1.init(this);
+    providerBuilder.add(skylarkProviders1);
 
-    providerBuilder.put(SkylarkProviders.class, new SkylarkProviders(skylarkProviders));
-
-    this.providers = ImmutableMap.copyOf(providerBuilder);
+    this.providers = providerBuilder.build();
     this.configConditions = ruleContext.getConfigConditions();
 
     // If this rule is the run_under target, then check that we have an executable; note that
@@ -100,17 +94,12 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
     return configConditions;
   }
 
+  @Nullable
   @Override
   public <P extends TransitiveInfoProvider> P getProvider(Class<P> providerClass) {
-    AnalysisUtils.checkProvider(providerClass);
     // TODO(bazel-team): Should aspects be allowed to override providers on the configured target
     // class?
-    Object provider = providers.get(providerClass);
-    if (provider == null) {
-      return null;
-    } else {
-      return providerClass.cast(provider);
-    }
+    return providers.getProvider(providerClass);
   }
 
   /**
@@ -120,6 +109,15 @@ public final class RuleConfiguredTarget extends AbstractConfiguredTarget {
   public Object get(String providerKey) {
     return getProvider(SkylarkProviders.class).getValue(providerKey);
   }
+
+  /**
+   * Returns a declared provider provided by this target. Only meant to use from Skylark.
+   */
+  @Override
+  public SkylarkClassObject get(SkylarkClassObjectConstructor.Key providerKey) {
+    return getProvider(SkylarkProviders.class).getDeclaredProvider(providerKey);
+  }
+
 
   @Override
   public final Rule getTarget() {

@@ -15,7 +15,6 @@
 package com.google.devtools.build.lib.rules.cpp;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.BaseSpawn;
@@ -38,11 +37,6 @@ import java.util.Collection;
 public class SpawnGccStrategy implements CppCompileActionContext {
 
   @Override
-  public boolean needsIncludeScanning() {
-    return false;
-  }
-
-  @Override
   public Collection<Artifact> findAdditionalInputs(
       CppCompileAction action, ActionExecutionContext actionExecutionContext)
       throws ExecException, InterruptedException {
@@ -59,7 +53,7 @@ public class SpawnGccStrategy implements CppCompileActionContext {
         new BaseSpawn(
             action.getArgv(),
             action.getEnvironment(),
-            ImmutableMap.<String, String>of(),
+            action.getExecutionInfo(),
             action,
             estimateResourceConsumption(action));
     spawnActionContext.exec(spawn, actionExecutionContext);

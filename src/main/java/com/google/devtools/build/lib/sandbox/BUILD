@@ -6,7 +6,7 @@ java_library(
     name = "sandbox",
     srcs = glob(["*.java"]),
     data = [
-        "//src/main/tools:namespace-sandbox",
+        "//src/main/tools:linux-sandbox",
     ],
     deps = [
         "//src/main/java/com/google/devtools/build/lib:build-base",
@@ -29,5 +29,6 @@ java_library(
 
 filegroup(
     name = "srcs",
+    testonly = 0,  # All srcs should be not test only, overwrite package default.
     srcs = glob(["**"]),
 )

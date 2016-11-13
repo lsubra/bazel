@@ -1,12 +1,18 @@
+filegroup(
+    name = "srcs",
+    srcs = glob(["**"]),
+    visibility = ["//src:__pkg__"],
+)
+
 TESTUTIL_FILES = [
     "TrackingAwaiter.java",
     "GraphTester.java",
     "GenericFunctionException.java",
     "SomeErrorException.java",
-    "TrackingInvalidationReceiver.java",
+    "TrackingProgressReceiver.java",
     "WalkableGraphUtils.java",
     # Truth Subject, SubjectFactory, and Graph files.
-] + glob(["*Subject.java"]) + glob(["*SubjectFactory.java"]) + glob(["*Graph.java"])
+] + glob(["*Subject.java"]) + glob(["*SubjectFactory.java"]) + glob(["*Graph.java"]) + glob(["*Helper.java"])
 
 java_library(
     name = "testutil",

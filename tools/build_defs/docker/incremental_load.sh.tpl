@@ -1,4 +1,4 @@
-#!/bin/bash -eu
+#!/bin/bash
 #
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -eu
+
 # This is a generated file that loads all docker layers built by "docker_build".
 
 RUNFILES="${PYTHON_RUNFILES:-${BASH_SOURCE[0]}.runfiles}"
@@ -21,9 +23,9 @@ RUNFILES="${PYTHON_RUNFILES:-${BASH_SOURCE[0]}.runfiles}"
 DOCKER="${DOCKER:-docker}"
 
 FULL_DOCKER_VERSION=$(docker version -f {{.Server.Version}} 2> /dev/null \
-    || echo "1.10.0")
-DOCKER_MAJOR_VERSION=$(echo "$FULL_DOCKER_VERSION" | sed -r 's#^([0-9]+)\..*#\1#')
-DOCKER_MINOR_VERSION=$(echo "$FULL_DOCKER_VERSION" | sed -r 's#^[0-9]+\.([0-9]+).*#\1#')
+    || echo "1.5.0")
+DOCKER_MAJOR_VERSION=$(echo "$FULL_DOCKER_VERSION" | awk -F\. '{ print $1 }')
+DOCKER_MINOR_VERSION=$(echo "$FULL_DOCKER_VERSION" | awk -F\. '{ print $2 }')
 if [ "$DOCKER_MAJOR_VERSION" -eq "1" ] && [ "$DOCKER_MINOR_VERSION" -lt "10" ]; then
   LEGACY_DOCKER=true
 else

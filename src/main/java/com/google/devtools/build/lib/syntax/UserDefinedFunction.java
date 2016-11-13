@@ -26,7 +26,16 @@ import com.google.devtools.build.lib.syntax.compiler.LoopLabels;
 import com.google.devtools.build.lib.syntax.compiler.ReflectionUtils;
 import com.google.devtools.build.lib.syntax.compiler.VariableScope;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
+import java.io.File;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.asm.ClassVisitorWrapper;
 import net.bytebuddy.description.method.MethodDescription;
@@ -42,24 +51,12 @@ import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.matcher.ElementMatchers;
-
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.util.Textifier;
 import org.objectweb.asm.util.TraceClassVisitor;
-
-import java.io.File;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.nio.file.Files;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
 
 /**
  * The actual function registered in the environment. This function is defined in the
@@ -72,7 +69,7 @@ public class UserDefinedFunction extends BaseFunction {
   // we close over the globals at the time of definition
   private final Environment.Frame definitionGlobals;
 
-  private Optional<Method> method;
+  private final Optional<Method> method;
   // TODO(bazel-team) make this configurable once the compiler is stable
   public static boolean debugCompiler = false;
   public static boolean debugCompilerPrintByteCode = false;
@@ -118,8 +115,7 @@ public class UserDefinedFunction extends BaseFunction {
       }
     }
 
-    Profiler.instance().startTask(ProfilerTask.SKYLARK_USER_FN,
-        getLocationPathAndLine() + "#" + getName());
+    Profiler.instance().startTask(ProfilerTask.SKYLARK_USER_FN, getName());
     try {
       env.enterScope(this, ast, definitionGlobals);
       ImmutableList<String> names = signature.getSignature().getNames();
@@ -254,10 +250,7 @@ public class UserDefinedFunction extends BaseFunction {
               .getLoaded();
 
       return Optional.of(
-          ReflectionUtils.getMethod(
-                  functionClass,
-                  "call",
-                  parameterTypes.toArray(new Class<?>[parameterTypes.size()]))
+          ReflectionUtils.getMethod(functionClass, "call", parameterTypes.toArray(new Class<?>[0]))
               .getLoadedMethod());
     } catch (EvalException e) {
       // don't capture EvalExceptions
@@ -299,8 +292,7 @@ public class UserDefinedFunction extends BaseFunction {
     }
     // add a return None if there are no statements or the last one to ensure the method always
     // returns something. This implements the interpreters behavior.
-    if (statements.isEmpty()
-        || !(statements.get(statements.size() - 1) instanceof ReturnStatement)) {
+    if (statements.isEmpty() || !(Iterables.getLast(statements) instanceof ReturnStatement)) {
       code.add(new ByteCodeAppender.Simple(Runtime.GET_NONE, MethodReturn.REFERENCE));
     }
     // we now know which variables we used in the method, so assign them "undefined" (i.e. null)

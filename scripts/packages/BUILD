@@ -1,3 +1,31 @@
+filegroup(
+    name = "srcs",
+    srcs = glob(["**"]),
+    visibility = ["//scripts:__pkg__"],
+)
+
+filegroup(
+    name = "packages",
+    srcs = select({
+        "//src:windows": [],
+        "//src:windows_msvc": [],
+        "//src:darwin": [
+            ":install.sh",
+            ":generate-package-info",
+        ],
+        "//src:darwin_x86_64": [
+            ":install.sh",
+            ":generate-package-info",
+        ],
+        "//conditions:default": [
+            ":install.sh",
+            ":generate-package-info",
+            ":bazel-debian",
+            ":bazel-debian-src",
+        ],
+    }),
+)
+
 sh_binary(
     name = "package-info-generator",
     srcs = ["package_info_generator.sh"],
@@ -65,6 +93,14 @@ pkg_tar(
     strip_prefix = ".",
 )
 
+pkg_tar(
+    name = "bazel-rc",
+    files = ["debian/bazel.bazelrc"],
+    mode = "0644",
+    package_dir = "/etc",
+    strip_prefix = "debian",
+)
+
 genrule(
     name = "rename-bazel-completion",
     srcs = ["//scripts:bash_completion"],
@@ -85,6 +121,7 @@ pkg_tar(
     deps = [
         ":bazel-bin",
         ":bazel-completion",
+        ":bazel-rc",
     ],
 )
 
@@ -111,20 +148,20 @@ pkg_deb(
     name = "bazel-debian",
     architecture = "amd64",
     built_using = "bazel (HEAD)",
+    conflicts = [
+        "openjdk-9-jdk",
+    ],
     data = ":debian-data",
     depends = select({
         "//tools/jdk:jdk7": [
             "java7-jdk | java7-sdk",
         ],
         "//conditions:default": [
-            "java8-jdk | java8-sdk",
+            "google-jdk | java8-jdk | java8-sdk",
         ],
     }) + [
-        "pkg-config",
-        "zip",
         "g++",
         "zlib1g-dev",
-        "unzip",
         "bash-completion",
     ],
     description_file = "debian/description",
@@ -132,4 +169,48 @@ pkg_deb(
     maintainer = "The Bazel Authors <bazel-dev@googlegroups.com>",
     package = "bazel",
     version_file = ":version.txt",
+)
+
+filegroup(
+    name = "debian-files",
+    srcs = [
+        "debian/compat",
+        "debian/control",
+        "debian/copyright",
+        "debian/rules",
+    ],
+)
+
+genrule(
+    name = "generate-changelog-file",
+    srcs = [
+        "convert_changelog.py",
+        "//:changelog-file",
+    ],
+    outs = ["changelog"],
+    cmd = "python $(location convert_changelog.py) $(location //:changelog-file) $(location changelog)",
+)
+
+genrule(
+    name = "bazel-debian-src",
+    srcs = [
+        "//:bazel-srcs",
+        ":debian-files",
+        ":changelog",
+    ],
+    outs = [
+        "bazel.dsc",
+        "bazel.tar.gz",
+    ],
+    cmd = """
+        mkdir -p bazel/debian
+        tar -xf $(location //:bazel-srcs) -C ./bazel
+        for f in $(locations :debian-files); do
+          cp $$f ./bazel/debian/
+        done
+        cp $(location :changelog) ./bazel/debian
+        dpkg-source -b ./bazel
+        cp ./bazel_*.dsc $(location bazel.dsc)
+        cp ./bazel_*.tar.gz $(location bazel.tar.gz)
+        """,
 )

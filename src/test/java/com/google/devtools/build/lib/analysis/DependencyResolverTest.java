@@ -17,7 +17,8 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertNotNull;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ListMultimap;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.analysis.util.TestAspects;
@@ -31,13 +32,16 @@ import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.NoSuchThingException;
 import com.google.devtools.build.lib.packages.Target;
-
+import com.google.devtools.build.lib.testutil.Suite;
+import com.google.devtools.build.lib.testutil.TestSpec;
+import com.google.devtools.build.lib.util.OrderedSetMultimap;
+import java.util.List;
+import java.util.Set;
+import javax.annotation.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-
-import javax.annotation.Nullable;
 
 /**
  * Tests for {@link DependencyResolver}.
@@ -80,6 +84,15 @@ public class DependencyResolverTest extends AnalysisTestCase {
           throw new IllegalStateException(e);
         }
       }
+
+      @Nullable
+      @Override
+      protected List<BuildConfiguration> getConfigurations(
+          Set<Class<? extends BuildConfiguration.Fragment>> fragments,
+          Iterable<BuildOptions> buildOptions) {
+        throw new UnsupportedOperationException(
+            "this functionality is covered by analysis-phase integration tests");
+      }
     };
   }
 
@@ -87,7 +100,7 @@ public class DependencyResolverTest extends AnalysisTestCase {
     scratch.file("" + name + "/BUILD", contents);
   }
 
-  private ListMultimap<Attribute, Dependency> dependentNodeMap(
+  private OrderedSetMultimap<Attribute, Dependency> dependentNodeMap(
       String targetName, NativeAspectClass aspect) throws Exception {
     Target target = packageManager.getTarget(reporter, Label.parseAbsolute(targetName));
     return dependencyResolver.dependentNodeMap(
@@ -98,8 +111,8 @@ public class DependencyResolverTest extends AnalysisTestCase {
   }
 
   @SafeVarargs
-  private final void assertDep(
-      ListMultimap<Attribute, Dependency> dependentNodeMap,
+  private final Dependency assertDep(
+      OrderedSetMultimap<Attribute, Dependency> dependentNodeMap,
       String attrName,
       String dep,
       AspectDescriptor... aspects) {
@@ -122,6 +135,7 @@ public class DependencyResolverTest extends AnalysisTestCase {
 
     assertNotNull("Dependency '" + dep + "' on attribute '" + attrName + "' not found", dependency);
     assertThat(dependency.getAspects()).containsExactly((Object[]) aspects);
+    return dependency;
   }
 
   @Test
@@ -130,7 +144,7 @@ public class DependencyResolverTest extends AnalysisTestCase {
     pkg("a",
         "aspect(name='a', foo=[':b'])",
         "aspect(name='b', foo=[])");
-    ListMultimap<Attribute, Dependency> map = dependentNodeMap("//a:a", null);
+    OrderedSetMultimap<Attribute, Dependency> map = dependentNodeMap("//a:a", null);
     assertDep(
         map, "foo", "//a:b",
         new AspectDescriptor(TestAspects.SIMPLE_ASPECT));
@@ -142,7 +156,7 @@ public class DependencyResolverTest extends AnalysisTestCase {
     pkg("a",
         "simple(name='a', foo=[':b'])",
         "simple(name='b', foo=[])");
-    ListMultimap<Attribute, Dependency> map =
+    OrderedSetMultimap<Attribute, Dependency> map =
         dependentNodeMap("//a:a", TestAspects.ATTRIBUTE_ASPECT);
     assertDep(
         map, "foo", "//a:b",
@@ -150,12 +164,60 @@ public class DependencyResolverTest extends AnalysisTestCase {
   }
 
   @Test
+  public void hasAllAttributesAspect() throws Exception {
+    setRulesAvailableInTests(new TestAspects.BaseRule(), new TestAspects.SimpleRule());
+    pkg("a",
+        "simple(name='a', foo=[':b'])",
+        "simple(name='b', foo=[])");
+    OrderedSetMultimap<Attribute, Dependency> map =
+        dependentNodeMap("//a:a", TestAspects.ALL_ATTRIBUTES_ASPECT);
+    assertDep(
+        map, "foo", "//a:b",
+        new AspectDescriptor(TestAspects.ALL_ATTRIBUTES_ASPECT));
+  }
+
+  @Test
   public void hasAspectDependencies() throws Exception {
     setRulesAvailableInTests(new TestAspects.BaseRule());
     pkg("a", "base(name='a')");
     pkg("extra", "base(name='extra')");
-    ListMultimap<Attribute, Dependency> map =
+    OrderedSetMultimap<Attribute, Dependency> map =
         dependentNodeMap("//a:a", TestAspects.EXTRA_ATTRIBUTE_ASPECT);
     assertDep(map, "$dep", "//extra:extra");
+  }
+
+  /**
+   * Null configurations should be static whether we're building with static or dynamic
+   * configurations. This is because the dynamic config logic that translates transitions into
+   * final configurations can be trivially skipped in those cases.
+   */
+  @Test
+  public void nullConfigurationsAlwaysStatic() throws Exception {
+    pkg("a",
+        "genrule(name = 'gen', srcs = ['gen.in'], cmd = '', outs = ['gen.out'])");
+    update();
+    Dependency dep = assertDep(dependentNodeMap("//a:gen", null), "srcs", "//a:gen.in");
+    assertThat(dep.hasStaticConfiguration()).isTrue();
+    assertThat(dep.getConfiguration()).isNull();
+  }
+
+  /** Runs the same test with trimmed dynamic configurations. */
+  @TestSpec(size = Suite.SMALL_TESTS)
+  @RunWith(JUnit4.class)
+  public static class WithDynamicConfigurations extends DependencyResolverTest {
+    @Override
+    protected FlagBuilder defaultFlags() {
+      return super.defaultFlags().with(Flag.DYNAMIC_CONFIGURATIONS);
+    }
+  }
+
+  /** Runs the same test with untrimmed dynamic configurations. */
+  @TestSpec(size = Suite.SMALL_TESTS)
+  @RunWith(JUnit4.class)
+  public static class WithDynamicConfigurationsNoTrim extends DependencyResolverTest {
+    @Override
+    protected FlagBuilder defaultFlags() {
+      return super.defaultFlags().with(Flag.DYNAMIC_CONFIGURATIONS_NOTRIM);
+    }
   }
 }

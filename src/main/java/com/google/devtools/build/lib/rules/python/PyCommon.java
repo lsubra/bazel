@@ -20,7 +20,6 @@ import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.actions.extra.ExtraActionInfo;
 import com.google.devtools.build.lib.actions.extra.PythonInfo;
 import com.google.devtools.build.lib.analysis.AnalysisEnvironment;
@@ -34,20 +33,19 @@ import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.SkylarkProviders;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.Util;
-import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.Rule;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
+import com.google.devtools.build.lib.packages.SkylarkClassObjectConstructor;
 import com.google.devtools.build.lib.rules.cpp.CppFileTypes;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesCollector;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesCollector.LocalMetadataCollector;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesProvider;
-import com.google.devtools.build.lib.syntax.ClassObject.SkylarkClassObject;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.EvalUtils;
 import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
@@ -57,7 +55,6 @@ import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.protobuf.GeneratedMessage.GeneratedExtension;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -162,7 +159,7 @@ public final class PyCommon {
    */
   public static SkylarkClassObject createSourceProvider(
       NestedSet<Artifact> transitivePythonSources, boolean isUsingSharedLibrary) {
-    return new SkylarkClassObject(
+    return SkylarkClassObjectConstructor.STRUCT.create(
         ImmutableMap.<String, Object>of(
             TRANSITIVE_PYTHON_SRCS,
             SkylarkNestedSet.of(Artifact.class, transitivePythonSources),
@@ -396,10 +393,8 @@ public final class PyCommon {
     }
   }
 
-  /**
-   * @return A String that is the full path to the main python entry point.
-   */
-  public String determineMainExecutableSource() {
+  /** @return A String that is the full path to the main python entry point. */
+  public String determineMainExecutableSource(boolean withWorkspaceName) {
     String mainSourceName;
     Rule target = ruleContext.getRule();
     boolean explicitMain = target.isAttributeValueExplicitlySpecified("main");
@@ -435,9 +430,16 @@ public final class PyCommon {
       ruleContext.attributeError("srcs", buildNoMainMatchesErrorText(explicitMain, mainSourceName));
       return null;
     }
-
-    PathFragment workspaceName = new PathFragment(ruleContext.getRule().getWorkspaceName());
+    if (!withWorkspaceName) {
+      return mainArtifact.getRunfilesPath().getPathString();
+    }
+    PathFragment workspaceName = new PathFragment(
+        ruleContext.getRule().getPackage().getWorkspaceName());
     return workspaceName.getRelative(mainArtifact.getRunfilesPath()).getPathString();
+  }
+
+  public String determineMainExecutableSource() {
+    return determineMainExecutableSource(true);
   }
 
   public Artifact getExecutable() {
@@ -461,69 +463,6 @@ public final class PyCommon {
       ruleContext.ruleError(e.getMessage());
       return false;
     }
-  }
-
-  protected static final ResourceSet PY_COMPILE_RESOURCE_SET =
-      ResourceSet.createWithRamCpuIo(10 /* MB */, 1 /* CPU */, 0.0 /* IO */);
-
-  /**
-   * Utility function to compile multiple .py files to .pyc files.
-   */
-  public Collection<Artifact> createPycFiles(
-      Iterable<Artifact> sources, PathFragment pythonBinary,
-      String pythonPrecompileAttribute, String hostPython2RuntimeAttribute) {
-    List<Artifact> pycFiles = new ArrayList<>();
-    for (Artifact source : sources) {
-      Artifact pycFile = createPycFile(source, pythonBinary, pythonPrecompileAttribute,
-          hostPython2RuntimeAttribute);
-      if (pycFile != null) {
-        pycFiles.add(pycFile);
-      }
-    }
-    return ImmutableList.copyOf(pycFiles);
-  }
-
-  /**
-   * Given a single .py source artifact generate a .pyc file.
-   * @param pythonPrecompileAttribute e.g., "$python_precompile".
-   * @param hostPython2RuntimeAttribute e.g., ":host_python2_runtime".
-   */
-  public Artifact createPycFile(
-      Artifact source, PathFragment pythonBinary,
-      String pythonPrecompileAttribute, String hostPython2RuntimeAttribute) {
-    PackageIdentifier packageId = ruleContext.getLabel().getPackageIdentifier();
-    PackageIdentifier itemPackageId = source.getOwner().getPackageIdentifier();
-    if (!itemPackageId.equals(packageId)) {
-      // This will produce an error, so we skip this element.
-      return null;
-    }
-
-    Artifact output =
-        ruleContext.getRelatedArtifact(source.getRootRelativePath(), ".pyc");
-
-    // TODO(nnorwitz): Consider adding PYTHONHASHSEED=0 to the environment.
-    // This will make the .pyc more stable, though it will still be non-deterministic.
-    // The timestamp is zeroed out above.
-    SpawnAction.Builder builder = new SpawnAction.Builder()
-        .setResources(PY_COMPILE_RESOURCE_SET)
-        .setExecutable(pythonBinary)
-        .setProgressMessage("Compiling Python " + source.prettyPrint())
-        .addInputArgument(
-            ruleContext.getPrerequisiteArtifact(pythonPrecompileAttribute, Mode.HOST))
-        .setMnemonic("PyCompile");
-
-    TransitiveInfoCollection pythonTarget =
-        ruleContext.getPrerequisite(hostPython2RuntimeAttribute, Mode.HOST);
-    if (pythonTarget != null) {
-      builder.addInputs(pythonTarget
-          .getProvider(FileProvider.class)
-          .getFilesToBuild());
-    }
-
-    builder.addInputArgument(source);
-    builder.addOutputArgument(output);
-    ruleContext.registerAction(builder.build(ruleContext));
-    return output;
   }
 
 

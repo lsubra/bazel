@@ -1,4 +1,4 @@
-#!/bin/sh -eu
+#!/bin/sh
 
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -eu
+
 # This script is used to create the directory tree embedded into the Bazel
 # binary that is used as the default source for the @bazel_tools repository.
 # It shuffles around files compiled in other rules, then zips them up.
@@ -27,6 +29,16 @@ mkdir -p "${PACKAGE_DIR}"
 trap "rm -fr \"${PACKAGE_DIR}\"" EXIT
 
 for i in $*; do
+
+  # Xcode tools should come from src/tools/xcode/.  Exclude scripts in
+  # tools/objc to avoid conflict.
+  if  [ "$i" = "tools/objc/xcrunwrapper.sh" ] \
+    || [ "$i" = "tools/objc/libtool.sh" ] \
+    || [ "$i" = "tools/objc/make_hashed_objlist.py" ]
+  then
+    continue
+  fi
+
   case "$i" in
     *tools/jdk/BUILD*) OUTPUT_PATH=tools/jdk/BUILD ;;
     *JavaBuilder*_deploy.jar) OUTPUT_PATH=tools/jdk/JavaBuilder_deploy.jar ;;
@@ -42,8 +54,10 @@ for i in $*; do
     *zipper) OUTPUT_PATH=tools/zip/zipper/zipper ;;
     *src/objc_tools/*) OUTPUT_PATH=tools/objc/precomp_${i##*/} ;;
     *xcode*StdRedirect.dylib) OUTPUT_PATH=tools/objc/StdRedirect.dylib ;;
+    *xcode*make_hashed_objlist.py) OUTPUT_PATH=tools/objc/make_hashed_objlist.py ;;
     *xcode*realpath) OUTPUT_PATH=tools/objc/realpath ;;
     *xcode*xcode-locator) OUTPUT_PATH=tools/objc/xcode-locator ;;
+    *src/tools/xcode/*.sh) OUTPUT_PATH=tools/objc/${i##*/} ;;
     *src/tools/xcode/*) OUTPUT_PATH=tools/objc/${i##*/}.sh ;;
     *) OUTPUT_PATH=$(echo $i | sed 's_^.*bazel-out/[^/]*/bin/__') ;;
   esac
@@ -65,5 +79,5 @@ touch "${PACKAGE_DIR}/tools/defaults/BUILD"
 for i in $(find "${PACKAGE_DIR}" -name BUILD.tools); do
   mv "$i" "$(dirname "$i")/BUILD"
 done
-find "${PACKAGE_DIR}" -exec touch -t 198001010000.00 '{}' ';'
+find "${PACKAGE_DIR}" -exec touch -t 198001010000.00 '{}' '+'
 (cd "${PACKAGE_DIR}" && find . -type f | sort | zip -qDX@ "${OUTPUT}")

@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.rules;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.ActionsProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleContext;
@@ -28,6 +29,7 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.packages.Rule;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
 import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.rules.SkylarkRuleContext.Kind;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesCollector;
@@ -36,7 +38,6 @@ import com.google.devtools.build.lib.rules.test.InstrumentedFilesProvider;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkValue;
 import com.google.devtools.build.lib.syntax.BaseFunction;
 import com.google.devtools.build.lib.syntax.ClassObject;
-import com.google.devtools.build.lib.syntax.ClassObject.SkylarkClassObject;
 import com.google.devtools.build.lib.syntax.Environment;
 import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.syntax.EvalExceptionWithStackTrace;
@@ -49,7 +50,6 @@ import com.google.devtools.build.lib.syntax.SkylarkType;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
-
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -89,8 +89,13 @@ public final class SkylarkRuleConfiguredTargetBuilder {
 
       if (ruleContext.hasErrors()) {
         return null;
-      } else if (!(target instanceof SkylarkClassObject) && target != Runtime.NONE) {
-        ruleContext.ruleError("Rule implementation doesn't return a struct");
+      } else if (
+          !(target instanceof SkylarkClassObject) && target != Runtime.NONE
+          && !(target instanceof Iterable)) {
+        ruleContext.ruleError(
+            String.format(
+                "Rule should return a return a struct or a list, but got %s",
+                SkylarkType.typeOf(target)));
         return null;
       } else if (!expectFailure.isEmpty()) {
         ruleContext.ruleError("Expected failure not found: " + expectFailure);
@@ -152,7 +157,8 @@ public final class SkylarkRuleConfiguredTargetBuilder {
       filesToBuild.add(executable);
     }
     builder.setFilesToBuild(filesToBuild.build());
-    return addStructFields(ruleContext, builder, target, executable, registeredProviderTypes);
+    return addStructFieldsAndBuild(
+        ruleContext, builder, target, executable, registeredProviderTypes);
   }
 
   private static Artifact getExecutable(RuleContext ruleContext, Object target)
@@ -216,7 +222,7 @@ public final class SkylarkRuleConfiguredTargetBuilder {
     }
   }
 
-  private static ConfiguredTarget addStructFields(
+  private static ConfiguredTarget addStructFieldsAndBuild(
       RuleContext ruleContext,
       RuleConfiguredTargetBuilder builder,
       Object target,
@@ -249,6 +255,7 @@ public final class SkylarkRuleConfiguredTargetBuilder {
           Location insLoc = insStruct.getCreationLoc();
           FileTypeSet fileTypeSet = FileTypeSet.ANY_FILE;
           if (insStruct.getKeys().contains("extensions")) {
+            @SuppressWarnings("unchecked")
             List<String> exts = cast(
                 "extensions", insStruct, SkylarkList.class, String.class, insLoc);
             if (exts.isEmpty()) {
@@ -286,10 +293,27 @@ public final class SkylarkRuleConfiguredTargetBuilder {
           Class<? extends TransitiveInfoProvider> providerType = registeredProviderTypes.get(key);
           TransitiveInfoProvider provider = cast(key, struct, providerType, loc);
           builder.addProvider(providerType, provider);
+        } else if (key.equals("providers")) {
+          Iterable iterable = cast(key, struct, Iterable.class, loc);
+          for (Object o : iterable) {
+            SkylarkClassObject declaredProvider = SkylarkType.cast(o, SkylarkClassObject.class, loc,
+                "The value of 'providers' should be a sequence of declared providers");
+            builder.addSkylarkDeclaredProvider(declaredProvider, loc);
+          }
         } else if (!key.equals("executable")) {
           // We handled executable already.
           builder.addSkylarkTransitiveInfo(key, struct.getValue(key), loc);
         }
+      }
+    } else if (target instanceof Iterable) {
+      loc = ruleContext.getRule().getRuleClassObject().getConfiguredTargetFunction().getLocation();
+      for (Object o : (Iterable) target) {
+        SkylarkClassObject declaredProvider = SkylarkType.cast(o, SkylarkClassObject.class, loc,
+            "A return value of rule implementation function should be "
+                + "a sequence of declared providers");
+        Location creationLoc = declaredProvider.getCreationLocOrNull();
+        builder.addSkylarkDeclaredProvider(declaredProvider,
+            creationLoc != null ? creationLoc : loc);
       }
     }
 
@@ -323,6 +347,13 @@ public final class SkylarkRuleConfiguredTargetBuilder {
           ? null : RunfilesSupport.withExecutable(ruleContext, computedDefaultRunfiles, executable);
       builder.setRunfilesSupport(runfilesSupport, executable);
     }
+
+    if (ruleContext.getRule().getRuleClassObject().isSkylarkTestable()) {
+      SkylarkClassObject actions = ActionsProvider.create(
+          ruleContext.getAnalysisEnvironment().getRegisteredActions());
+      builder.addSkylarkDeclaredProvider(actions, loc);
+    }
+
     try {
       return builder.build();
     } catch (IllegalArgumentException e) {

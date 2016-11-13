@@ -13,7 +13,10 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.engine;
 
+import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+
 import java.util.Collection;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * Base class for expressions in the Blaze query language, revision 2.
@@ -42,6 +45,7 @@ import java.util.Collection;
  * different ways of printing out the result of a query.  Each accepts a {@code
  * Digraph} of {@code Target}s, and an output stream.
  */
+@ThreadSafe
 public abstract class QueryExpression {
 
   /**
@@ -67,8 +71,45 @@ public abstract class QueryExpression {
    * thrown.  If disabled, evaluation will stumble on to produce a (possibly
    * inaccurate) result, but a result nonetheless.
    */
-  public abstract <T> void eval(QueryEnvironment<T> env, Callback<T> callback)
-      throws QueryException, InterruptedException;
+  public final <T> void eval(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      Callback<T> callback) throws QueryException, InterruptedException {
+    env.getEvalListener().onEval(this, env, context, callback);
+    evalImpl(env, context, callback);
+  }
+
+  protected abstract <T> void evalImpl(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      Callback<T> callback) throws QueryException, InterruptedException;
+
+  /**
+   * Evaluates this query in the specified environment, as in
+   * {@link #eval(QueryEnvironment, VariableContext, Callback)}, using {@code forkJoinPool} to
+   * achieve parallelism.
+   *
+   * <p>The caller must ensure that {@code env} is thread safe.
+   */
+  @ThreadSafe
+  public final <T> void parEval(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      ThreadSafeCallback<T> callback,
+      ForkJoinPool forkJoinPool)
+      throws QueryException, InterruptedException {
+    env.getEvalListener().onParEval(this, env, context, callback, forkJoinPool);
+    parEvalImpl(env, context, callback, forkJoinPool);
+  }
+
+  protected <T> void parEvalImpl(
+      QueryEnvironment<T> env,
+      VariableContext<T> context,
+      ThreadSafeCallback<T> callback,
+      ForkJoinPool forkJoinPool)
+      throws QueryException, InterruptedException {
+    evalImpl(env, context, callback);
+  }
 
   /**
    * Collects all target patterns that are referenced anywhere within this query expression and adds

@@ -15,6 +15,7 @@ package com.google.devtools.build.lib.buildtool;
 
 import com.google.common.base.Joiner;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
@@ -37,7 +38,7 @@ public class OutputDirectoryLinksUtils {
 
   private static final String NO_CREATE_SYMLINKS_PREFIX = "/";
 
-  public static final String getOutputSymlinkName(String productName) {
+  public static String getOutputSymlinkName(String productName) {
     return productName + "-out";
   }
 
@@ -50,7 +51,7 @@ public class OutputDirectoryLinksUtils {
    * directories. Issues a warning if it fails, e.g. because workspaceDirectory
    * is readonly.
    */
-  public static void createOutputDirectoryLinks(String workspaceName,
+  static void createOutputDirectoryLinks(String workspaceName,
       Path workspace, Path execRoot, Path outputPath,
       EventHandler eventHandler, @Nullable BuildConfiguration targetConfig,
       String symlinkPrefix, String productName) {
@@ -69,11 +70,11 @@ public class OutputDirectoryLinksUtils {
 
     if (targetConfig != null) {
       createLink(workspace, symlinkPrefix + "bin",
-          targetConfig.getBinDirectory().getPath(), failures);
+          targetConfig.getBinDirectory(RepositoryName.MAIN).getPath(), failures);
       createLink(workspace, symlinkPrefix + "testlogs",
-          targetConfig.getTestLogsDirectory().getPath(), failures);
+          targetConfig.getTestLogsDirectory(RepositoryName.MAIN).getPath(), failures);
       createLink(workspace, symlinkPrefix + "genfiles",
-          targetConfig.getGenfilesDirectory().getPath(), failures);
+          targetConfig.getGenfilesDirectory(RepositoryName.MAIN).getPath(), failures);
     }
 
     if (!failures.isEmpty()) {
@@ -191,7 +192,7 @@ public class OutputDirectoryLinksUtils {
     Path link = base.getRelative(name);
     try {
       if (link.exists(Symlinks.NOFOLLOW)) {
-        ExecutionTool.LOG.finest("Removing " + link);
+        ExecutionTool.log.finest("Removing " + link);
         link.delete();
       }
       return true;

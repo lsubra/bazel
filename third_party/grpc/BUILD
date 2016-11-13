@@ -9,22 +9,29 @@ filegroup(
 
 java_import(
     name = "grpc-jar",
-    jars = ["grpc-all-0.13.2.jar"],
+    jars = [
+        "grpc-netty-0.15.0.jar",
+        "grpc-protobuf-0.15.0.jar",
+        "grpc-protobuf-lite-0.15.0.jar",
+        "grpc-stub-0.15.0.jar",
+        "grpc-core-0.15.0.jar",
+    ],
     runtime_deps = ["//third_party:netty"],
 )
 
 filegroup(
     name = "grpc-java-plugin",
     srcs = select({
-        "//third_party:windows_mingw": ["protoc-gen-grpc-java-0.13.2-windows-x86_32.exe"],
-        "//third_party:windows_msys64_mingw64": ["protoc-gen-grpc-java-0.13.2-windows-x86_64.exe"],
-        "//third_party:windows_msys64": ["protoc-gen-grpc-java-0.13.2-windows-x86_64.exe"],
-        "//third_party:windows_clang": ["protoc-gen-grpc-java-0.13.2-windows-x86_64.exe"],
-        "//third_party:darwin": ["protoc-gen-grpc-java-0.13.2-osx-x86_64.exe"],
-        "//third_party:k8": ["protoc-gen-grpc-java-0.13.2-linux-x86_64.exe"],
-        "//third_party:piii": ["protoc-gen-grpc-java-0.13.2-linux-x86_32.exe"],
-        "//third_party:arm": ["protoc-gen-grpc-java-0.13.2-linux-x86_32.exe"],
-        "//third_party:freebsd": ["protoc-gen-grpc-java-0.13.2-linux-x86_32.exe"],
+        "//third_party:windows_mingw": ["protoc-gen-grpc-java-0.15.0-windows-x86_32.exe"],
+        "//third_party:windows_msys64_mingw64": ["protoc-gen-grpc-java-0.15.0-windows-x86_64.exe"],
+        "//third_party:windows_msys64": ["protoc-gen-grpc-java-0.15.0-windows-x86_64.exe"],
+        "//third_party:windows_clang": ["protoc-gen-grpc-java-0.15.0-windows-x86_64.exe"],
+        "//third_party:darwin": ["protoc-gen-grpc-java-0.15.0-osx-x86_64.exe"],
+        "//third_party:k8": ["protoc-gen-grpc-java-0.15.0-linux-x86_64.exe"],
+        "//third_party:piii": ["protoc-gen-grpc-java-0.15.0-linux-x86_32.exe"],
+        "//third_party:arm": ["protoc-gen-grpc-java-0.15.0-linux-x86_32.exe"],
+        "//third_party:freebsd": ["protoc-gen-grpc-java-0.15.0-linux-x86_32.exe"],
+        "//third_party:s390x": ["protoc-gen-grpc-java-0.15.0-linux-s390x_64.exe"],
     }),
 )
 
@@ -41,6 +48,9 @@ cc_binary(
     copts = [
         "-Ithird_party/grpc/include",
         "-Ithird_party/grpc",
+    ],
+    linkopts = [
+        "-lm",
     ],
     visibility = ["//visibility:public"],
     deps = ["//third_party/protobuf:protoc_lib"],

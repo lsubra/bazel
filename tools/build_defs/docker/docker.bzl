@@ -14,8 +14,8 @@
 """Rules for manipulation Docker images."""
 
 # Filetype to restrict inputs
-tar_filetype = FileType([".tar", ".tar.gz", ".tgz", ".tar.xz"])
-deb_filetype = FileType([".deb", ".udeb"])
+tar_filetype = [".tar", ".tar.gz", ".tgz", ".tar.xz"]
+deb_filetype = [".deb", ".udeb"]
 
 # Docker files are tarballs, should we allow other extensions than tar?
 docker_filetype = tar_filetype
@@ -417,12 +417,12 @@ docker_build_ = rule(
         "label_file_strings": attr.string_list(),
         "build_layer": attr.label(
             default=Label("//tools/build_defs/pkg:build_tar"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True),
         "create_image": attr.label(
             default=Label("//tools/build_defs/docker:create_image"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True),
         "incremental_load_template": attr.label(
@@ -431,22 +431,22 @@ docker_build_ = rule(
             allow_files=True),
         "join_layers": attr.label(
             default=Label("//tools/build_defs/docker:join_layers"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True),
         "rewrite_tool": attr.label(
             default=Label("//tools/build_defs/docker:rewrite_json"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True),
         "create_image_config": attr.label(
             default=Label("//tools/build_defs/docker:create_image_config"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True),
         "sha256": attr.label(
             default=Label("//tools/build_defs/docker:sha256"),
-            cfg=HOST_CFG,
+            cfg="host",
             executable=True,
             allow_files=True)
     },

@@ -13,6 +13,9 @@
 // limitations under the License.
 package com.google.devtools.build.android;
 
+import com.android.ide.common.resources.configuration.FolderConfiguration;
+import com.android.ide.common.resources.configuration.ResourceQualifier;
+import com.android.resources.ResourceType;
 import com.google.common.base.Joiner;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableList;
@@ -20,15 +23,9 @@ import com.google.common.collect.ImmutableList.Builder;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
 import com.google.devtools.build.android.proto.SerializeFormat;
-
-import com.android.ide.common.resources.configuration.FolderConfiguration;
-import com.android.ide.common.resources.configuration.ResourceQualifier;
-import com.android.resources.ResourceType;
-
 import java.io.IOException;
 import java.io.OutputStream;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,7 +36,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import javax.annotation.CheckReturnValue;
 import javax.annotation.concurrent.Immutable;
 
@@ -49,7 +45,7 @@ import javax.annotation.concurrent.Immutable;
  * Each resource name consists of the resource package, name, type, and qualifiers.
  */
 @Immutable
-public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedName> {
+public class FullyQualifiedName implements DataKey {
   public static final String DEFAULT_PACKAGE = "res-auto";
   private static final Joiner DASH_JOINER = Joiner.on('-');
 
@@ -63,7 +59,7 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
    * A factory for parsing an generating FullyQualified names with qualifiers and package.
    */
   public static class Factory {
-    private static final String BCP_PREFIX = "b+";
+
     private static final Pattern PARSING_REGEX =
         Pattern.compile("(?:(?<package>[^:]+):){0,1}(?<type>[^-/]+)(?:[^/]*)/(?<name>.+)");
     public static final String INVALID_QUALIFIED_NAME_MESSAGE_NO_MATCH =
@@ -95,36 +91,25 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
           Iterators.peekingIterator(Iterators.forArray(dirNameAndQualifiers));
       // Remove directory name
       rawQualifiers.next();
-      List<String> unHandledLanguageRegionQualifiers = new ArrayList<>();
-      List<String> unHandledDensityQualifiers = new ArrayList<>();
-      List<String> unHandledUIModeQualifiers = new ArrayList<>();
+      List<String> transformedLocaleQualifiers = new ArrayList<>();
       List<String> handledQualifiers = new ArrayList<>();
-      // TODO(corysmith): Remove when FolderConfiguration is updated to handle anydpi and
-      // BCP prefixes.
-      // The language/region qualifiers and anydpi cannot be currently handled.
+      // Do some substitution of language/region qualifiers.
       while (rawQualifiers.hasNext()) {
         String qualifier = rawQualifiers.next();
-        if (qualifier.startsWith(BCP_PREFIX)) {
-          // The b+local+script/region can't be handled.
-          unHandledLanguageRegionQualifiers.add(qualifier);
-        } else if ("es".equalsIgnoreCase(qualifier)
+        if ("es".equalsIgnoreCase(qualifier)
             && rawQualifiers.hasNext()
             && "419".equalsIgnoreCase(rawQualifiers.peek())) {
           // Replace the es-419.
-          unHandledLanguageRegionQualifiers.add("b+es+419");
+          transformedLocaleQualifiers.add("b+es+419");
           // Consume the next value, as it's been replaced.
           rawQualifiers.next();
         } else if ("sr".equalsIgnoreCase(qualifier)
             && rawQualifiers.hasNext()
             && "rlatn".equalsIgnoreCase(rawQualifiers.peek())) {
           // Replace the sr-rLatn.
-          unHandledLanguageRegionQualifiers.add("b+sr+Latn");
+          transformedLocaleQualifiers.add("b+sr+Latn");
           // Consume the next value, as it's been replaced.
           rawQualifiers.next();
-        } else if (qualifier.equals("anydpi")) {
-          unHandledDensityQualifiers.add(qualifier);
-        } else if (qualifier.equals("watch")) {
-          unHandledUIModeQualifiers.add(qualifier);
         } else {
           // This qualifier can probably be handled by FolderConfiguration.
           handledQualifiers.add(qualifier);
@@ -141,61 +126,20 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
       config.normalize();
 
       // This is fragile but better than the Gradle scheme of just dropping
-      // entire subtrees. 
+      // entire subtrees.
       Builder<String> builder = ImmutableList.<String>builder();
       addIfNotNull(config.getCountryCodeQualifier(), builder);
       addIfNotNull(config.getNetworkCodeQualifier(), builder);
-      if (unHandledLanguageRegionQualifiers.isEmpty()) {
-        addIfNotNull(config.getLanguageQualifier(), builder);
-        addIfNotNull(config.getRegionQualifier(), builder);
+      if (transformedLocaleQualifiers.isEmpty()) {
+        addIfNotNull(config.getLocaleQualifier(), builder);
       } else {
-        builder.addAll(unHandledLanguageRegionQualifiers);
+        builder.addAll(transformedLocaleQualifiers);
       }
-      addIfNotNull(config.getLayoutDirectionQualifier(), builder);
-      addIfNotNull(config.getSmallestScreenWidthQualifier(), builder);
-      addIfNotNull(config.getScreenWidthQualifier(), builder);
-      addIfNotNull(config.getScreenHeightQualifier(), builder);
-      addIfNotNull(config.getScreenSizeQualifier(), builder);
-      addIfNotNull(config.getScreenRatioQualifier(), builder);
-      addIfNotNullAndExist(config, "getScreenRoundQualifier", builder);
-      addIfNotNull(config.getScreenOrientationQualifier(), builder);
-      if (unHandledUIModeQualifiers.isEmpty()) {
-        addIfNotNull(config.getUiModeQualifier(), builder);
-      } else {
-        builder.addAll(unHandledUIModeQualifiers);
+      // index 3 is past the country code, network code, and locale indices.
+      for (int i = 3; i < FolderConfiguration.getQualifierCount(); ++i) {
+        addIfNotNull(config.getQualifier(i), builder);
       }
-      addIfNotNull(config.getNightModeQualifier(), builder);
-      if (unHandledDensityQualifiers.isEmpty()) {
-        addIfNotNull(config.getDensityQualifier(), builder);
-      } else {
-        builder.addAll(unHandledDensityQualifiers);
-      }
-      addIfNotNull(config.getTouchTypeQualifier(), builder);
-      addIfNotNull(config.getKeyboardStateQualifier(), builder);
-      addIfNotNull(config.getTextInputMethodQualifier(), builder);
-      addIfNotNull(config.getNavigationStateQualifier(), builder);
-      addIfNotNull(config.getNavigationMethodQualifier(), builder);
-      addIfNotNull(config.getScreenDimensionQualifier(), builder);
-      addIfNotNull(config.getVersionQualifier(), builder);
-
       return builder.build();
-    }
-
-    private static void addIfNotNullAndExist(
-        FolderConfiguration config, String methodName, Builder<String> builder) {
-      try {
-        Method method = config.getClass().getMethod(methodName);
-        ResourceQualifier qualifier = (ResourceQualifier) method.invoke(config);
-        if (qualifier != null) {
-          builder.add(qualifier.getFolderSegment());
-        }
-      } catch (NoSuchMethodException
-          | IllegalAccessException
-          | IllegalArgumentException
-          | InvocationTargetException e) {
-        // Suppress the error and continue.
-        return;
-      }
     }
 
     private static void addIfNotNull(
@@ -246,14 +190,54 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
       return FullyQualifiedName.of(
           parsedPackage == null ? pkg : parsedPackage, qualifiers, resourceType, resourceName);
     }
+
+    /**
+     * Generates a FullyQualifiedName for a file-based resource given the source Path.
+     *
+     * @param sourcePath the path of the file-based resource.
+     * @throws IllegalArgumentException if the file-based resource has an invalid filename
+     */
+    public FullyQualifiedName parse(Path sourcePath) {
+      return parse(deriveRawFullyQualifiedName(sourcePath));
+    }
+
+    private static String deriveRawFullyQualifiedName(Path source) {
+      if (source.getNameCount() < 2) {
+        throw new IllegalArgumentException(
+            String.format(
+                "The resource path %s is too short. "
+                    + "The path is expected to be <resource type>/<file name>.",
+                source));
+      }
+      String pathWithExtension =
+          source.subpath(source.getNameCount() - 2, source.getNameCount()).toString();
+      int extensionStart = pathWithExtension.indexOf('.');
+      if (extensionStart > 0) {
+        return pathWithExtension.substring(0, extensionStart);
+      }
+      return pathWithExtension;
+    }
+
+    // Grabs the extension portion of the path removed by deriveRawFullyQualifiedName.
+    private static String getSourceExtension(Path source) {
+      // TODO(corysmith): Find out if there is a filename parser utility.
+      String fileName = source.getFileName().toString();
+      int extensionStart = fileName.indexOf('.');
+      if (extensionStart > 0) {
+        return fileName.substring(extensionStart);
+      }
+      return "";
+    }
   }
 
   public static boolean isOverwritable(FullyQualifiedName name) {
-    return !(name.resourceType == ResourceType.ID || name.resourceType == ResourceType.STYLEABLE);
+    return !(name.resourceType == ResourceType.ID
+        || name.resourceType == ResourceType.PUBLIC
+        || name.resourceType == ResourceType.STYLEABLE);
   }
 
   /**
-   * Creates a new FullyQualifiedName with sorted qualifiers.
+   * Creates a new FullyQualifiedName with normalized qualifiers.
    *
    * @param pkg The resource package of the name. If unknown the default should be "res-auto"
    * @param qualifiers The resource qualifiers of the name, such as "en" or "xhdpi".
@@ -306,11 +290,11 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
    * Non-values Android Resource have a well defined file layout: From the resource directory, they
    * reside in &lt;resource type&gt;[-&lt;qualifier&gt;]/&lt;resource name&gt;[.extension]
    *
-   * @param sourceExtension The extension of the resource represented by the FullyQualifiedName
+   * @param source The original source of the file-based resource's FullyQualifiedName
    * @return A string representation of the FullyQualifiedName with the provided extension.
    */
-  public String toPathString(String sourceExtension) {
-    // TODO(corysmith): Does the extension belong in the FullyQualifiedName?
+  public String toPathString(Path source) {
+    String sourceExtension = FullyQualifiedName.Factory.getSourceExtension(source);
     return Paths.get(
             DASH_JOINER.join(
                 ImmutableList.<String>builder()
@@ -350,6 +334,10 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
 
   public String name() {
     return resourceName;
+  }
+
+  public ResourceType type() {
+    return resourceType;
   }
 
   private FullyQualifiedName(
@@ -400,7 +388,11 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
   }
 
   @Override
-  public int compareTo(FullyQualifiedName other) {
+  public int compareTo(DataKey otherKey) {
+    if (!(otherKey instanceof FullyQualifiedName)) {
+      return getKeyType().compareTo(otherKey.getKeyType());
+    }
+    FullyQualifiedName other = (FullyQualifiedName) otherKey;
     if (!pkg.equals(other.pkg)) {
       return pkg.compareTo(other.pkg);
     }
@@ -421,14 +413,20 @@ public class FullyQualifiedName implements DataKey, Comparable<FullyQualifiedNam
   }
 
   @Override
+  public KeyType getKeyType() {
+    return KeyType.FULL_QUALIFIED_NAME;
+  }
+
+  @Override
   public void serializeTo(OutputStream out, int valueSize) throws IOException {
-    SerializeFormat.DataKey.newBuilder()
+    toSerializedBuilder().setValueSize(valueSize).build().writeDelimitedTo(out);
+  }
+
+  public SerializeFormat.DataKey.Builder toSerializedBuilder() {
+    return SerializeFormat.DataKey.newBuilder()
         .setKeyPackage(pkg)
-        .setValueSize(valueSize)
         .setResourceType(resourceType.getName().toUpperCase())
         .addAllQualifiers(qualifiers)
-        .setKeyValue(resourceName)
-        .build()
-        .writeDelimitedTo(out);
+        .setKeyValue(resourceName);
   }
 }

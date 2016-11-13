@@ -17,7 +17,6 @@ package com.google.devtools.build.lib.rules.objc;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.rules.cpp.Link.LINK_LIBRARY_FILETYPES;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.ASSET_CATALOG;
-import static com.google.devtools.build.lib.rules.objc.ObjcProvider.BREAKPAD_FILE;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.BUNDLE_FILE;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.BUNDLE_IMPORT_DIR;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.CC_LIBRARY;
@@ -63,6 +62,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.UnmodifiableIterator;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.AbstractConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
@@ -73,7 +73,6 @@ import com.google.devtools.build.lib.rules.cpp.CcLinkParams;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsProvider;
 import com.google.devtools.build.lib.rules.cpp.CppCompilationContext;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
-import com.google.devtools.build.lib.rules.cpp.CppRunfilesProvider;
 import com.google.devtools.build.lib.rules.cpp.LinkerInputs;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileType;
@@ -134,8 +133,8 @@ public final class ObjcCommon {
   }
 
   static class Builder {
-    private RuleContext context;
-    private BuildConfiguration buildConfiguration;
+    private final RuleContext context;
+    private final BuildConfiguration buildConfiguration;
     private Optional<CompilationAttributes> compilationAttributes = Optional.absent();
     private Optional<ResourceAttributes> resourceAttributes = Optional.absent();
     private Iterable<SdkFramework> extraSdkFrameworks = ImmutableList.of();
@@ -146,6 +145,7 @@ public final class ObjcCommon {
     private Optional<CompilationArtifacts> compilationArtifacts = Optional.absent();
     private Iterable<ObjcProvider> depObjcProviders = ImmutableList.of();
     private Iterable<ObjcProvider> directDepObjcProviders = ImmutableList.of();
+    private Iterable<ObjcProvider> runtimeDepObjcProviders = ImmutableList.of();
     private Iterable<String> defines = ImmutableList.of();
     private Iterable<PathFragment> userHeaderSearchPaths = ImmutableList.of();
     private Iterable<PathFragment> directDependencyHeaderSearchPaths = ImmutableList.of();
@@ -251,15 +251,30 @@ public final class ObjcCommon {
       for (TransitiveInfoCollection dep : deps) {
         addAnyProviders(propagatedObjcDeps, dep, ObjcProvider.class);
         addAnyProviders(cppDeps, dep, CppCompilationContext.class);
-        // Hack to determine if dep is a cc target. Required so objc_library archives packed in
-        // CcLinkParamsProvider do not get consumed as cc targets.
-        if (dep.getProvider(CppRunfilesProvider.class) != null) {
+        if (isCcLibrary(dep)) {
           cppDepLinkParams.add(dep.getProvider(CcLinkParamsProvider.class));
+          addDefines(dep.getProvider(CppCompilationContext.class).getDefines());
         }
       }
       addDepObjcProviders(propagatedObjcDeps.build());
       this.depCcHeaderProviders = Iterables.concat(this.depCcHeaderProviders, cppDeps.build());
       this.depCcLinkProviders = Iterables.concat(this.depCcLinkProviders, cppDepLinkParams.build());
+      return this;
+    }
+
+    /**
+     * Adds providers for runtime frameworks included in the final app bundle but not linked with
+     * at build time.
+     */
+    Builder addRuntimeDeps(List<? extends TransitiveInfoCollection> runtimeDeps) {
+      ImmutableList.Builder<ObjcProvider> propagatedDeps =
+          ImmutableList.<ObjcProvider>builder();
+
+      for (TransitiveInfoCollection dep : runtimeDeps) {
+        addAnyProviders(propagatedDeps, dep, ObjcProvider.class);
+      }
+      this.runtimeDepObjcProviders = Iterables.concat(
+          this.runtimeDepObjcProviders, propagatedDeps.build());
       return this;
     }
 
@@ -393,6 +408,14 @@ public final class ObjcCommon {
               .addAll(DEFINE, defines)
               .addTransitiveAndPropagate(depObjcProviders)
               .addTransitiveWithoutPropagating(directDepObjcProviders);
+
+      for (ObjcProvider provider : runtimeDepObjcProviders) {
+        objcProvider.addTransitiveAndPropagate(ObjcProvider.DYNAMIC_FRAMEWORK_FILE, provider);
+        // TODO(b/28637288): Remove STATIC_FRAMEWORK_FILE and MERGE_ZIP when they are
+        // no longer provided by ios_framework.
+        objcProvider.addTransitiveAndPropagate(ObjcProvider.STATIC_FRAMEWORK_FILE, provider);
+        objcProvider.addTransitiveAndPropagate(ObjcProvider.MERGE_ZIP, provider);
+      }
 
       for (CppCompilationContext headerProvider : depCcHeaderProviders) {
         objcProvider.addTransitiveAndPropagate(HEADER, headerProvider.getDeclaredIncludeSrcs());
@@ -550,15 +573,26 @@ public final class ObjcCommon {
         objcProvider
             .add(DEBUG_SYMBOLS, intermediateArtifacts.dsymSymbol(dsymOutputType))
             .add(DEBUG_SYMBOLS_PLIST, intermediateArtifacts.dsymPlist(dsymOutputType));
-
-        if (ObjcRuleClasses.objcConfiguration(context).generateDebugSymbols()) {
-          objcProvider.add(BREAKPAD_FILE, intermediateArtifacts.breakpadSym());
-        }
       }
 
       return new ObjcCommon(objcProvider.build(), compilationArtifacts);
     }
 
+    private static boolean isCcLibrary(TransitiveInfoCollection info) {
+      try {
+        AbstractConfiguredTarget target = (AbstractConfiguredTarget) info;
+        String targetName = target.getTarget().getTargetKind();
+        for (String ruleClassName : ObjcRuleClasses.CompilingRule.ALLOWED_CC_DEPS_RULE_CLASSES) {
+          if (targetName.equals(ruleClassName + " rule")) {
+            return true;
+          }
+        }
+        return false;
+      } catch (Exception e) {
+        return false;
+      }
+    }
+    
     /**
      * Returns {@code true} if the given rule context has a launch storyboard set.
      */

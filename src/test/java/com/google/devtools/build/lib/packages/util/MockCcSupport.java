@@ -22,12 +22,12 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.rules.cpp.Link.LinkTargetType;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.CToolchain;
 import com.google.protobuf.TextFormat;
-
 import java.io.IOException;
 
 /**
@@ -35,10 +35,7 @@ import java.io.IOException;
  */
 public abstract class MockCcSupport {
 
-  /**
-   * Filter to remove implicit crosstool artifact and module map inputs
-   * of C/C++ rules.
-   */
+  /** Filter to remove implicit crosstool artifact and module map inputs of C/C++ rules. */
   public static final Predicate<Artifact> CC_ARTIFACT_FILTER =
       new Predicate<Artifact>() {
         @Override
@@ -46,6 +43,7 @@ public abstract class MockCcSupport {
           String basename = artifact.getExecPath().getBaseName();
           String pathString = artifact.getExecPathString();
           return !pathString.startsWith("third_party/crosstool/")
+              && !pathString.startsWith("tools/cpp/link_dynamic_library")
               && !(pathString.contains("/internal/_middlemen") && basename.contains("crosstool"))
               && !pathString.startsWith("_bin/build_interface_so")
               && !pathString.endsWith(".cppmap");
@@ -172,19 +170,188 @@ public abstract class MockCcSupport {
           + "  }"
           + "}";
 
-  public static final String THIN_LTO_CONFIGURATION =
+  public static final String HOST_AND_NONHOST_CONFIGURATION =
       ""
           + "feature { "
-          + "  name: 'thin_lto'"
+          + "  name: 'host'"
           + "  flag_set {"
           + "    action: 'c-compile'"
           + "    action: 'c++-compile'"
           + "    flag_group {"
-          + "      flag: '-Xclang-only=-Wno-inconsistent-missing-override'"
-          + "      flag: '-flto'"
-          + "      flag: '-O2'"
+          + "      flag: '-host'"
           + "    }"
           + "  }"
+          + "}"
+          + "feature { "
+          + "  name: 'nonhost'"
+          + "  flag_set {"
+          + "    action: 'c-compile'"
+          + "    action: 'c++-compile'"
+          + "    flag_group {"
+          + "      flag: '-nonhost'"
+          + "    }"
+          + "  }"
+          + "}";
+
+  public static final String THIN_LTO_CONFIGURATION =
+      ""
+          + "feature { "
+          + "  name: 'thin_lto'"
+          + "  requires { feature: 'nonhost' }"
+          + "  flag_set {"
+          + "    action: 'c-compile'"
+          + "    action: 'c++-compile'"
+          + "    flag_group {"
+          + "      flag: '-flto=thin'"
+          + "    }"
+          + "  }"
+          + "  flag_set {"
+          + "    action: 'lto-indexing'"
+          + "    flag_group {"
+          + "      flag: 'params_file=%{thinlto_optional_params_file}'"
+          + "      flag: 'prefix_replace=%{thinlto_prefix_replace}'"
+          + "    }"
+          + "  }"
+          + "  flag_set {"
+          + "    action: 'lto-backend'"
+          + "    flag_group {"
+          + "      flag: 'thinlto_index=%{thinlto_index}'"
+          + "      flag: 'thinlto_output_object_file=%{thinlto_output_object_file}'"
+          + "      flag: 'thinlto_input_bitcode_file=%{thinlto_input_bitcode_file}'"
+          + "    }"
+          + "  }"
+          + "}";
+
+  public static final String FDO_INSTRUMENT_CONFIGURATION =
+      ""
+          + "feature { "
+          + "  name: 'fdo_instrument'"
+          + "  provides: 'profile'"
+          + "  flag_set {"
+          + "    action: 'c-compile'"
+          + "    action: 'c++-compile'"
+          + "    action: 'c++-link-interface-dynamic-library'"
+          + "    action: 'c++-link-dynamic-library'"
+          + "    action: 'c++-link-executable'"
+          + "    flag_group {"
+          + "      flag: 'fdo_instrument_option'"
+          + "      flag: 'path=%{fdo_instrument_path}'"
+          + "    }"
+          + "  }"
+          + "}";
+
+  public static final String STATIC_LINK_TWEAKED_CONFIGURATION =
+      ""
+          + "artifact_name_pattern {"
+          + "   category_name: 'static_library'"
+          + "   pattern: 'lib%{base_name}.tweaked.a'"
+          + "}";
+
+  public static final String STATIC_LINK_AS_DOT_A_CONFIGURATION =
+      ""
+          + "artifact_name_pattern {"
+          + "   category_name: 'static_library'"
+          + "   pattern: 'lib%{base_name}.a'"
+          + "}";
+
+  public static final String STATIC_LINK_BAD_TEMPLATE_CONFIGURATION =
+      ""
+          + "artifact_name_pattern {"
+          + "   category_name: 'static_library'"
+          + "   pattern: 'foo%{bad_variable}bar'"
+          + "}";
+
+  public static final String INCOMPLETE_EXECUTABLE_ACTION_CONFIG =
+      ""
+          + "action_config {"
+          + "   config_name: '"
+          + LinkTargetType.EXECUTABLE.getActionName()
+          + "'"
+          + "   action_name: '"
+          + LinkTargetType.EXECUTABLE.getActionName()
+          + "'"
+          + "   tool {"
+          + "      tool_path: 'DUMMY_TOOL'"
+          + "   }"
+          + "}";
+
+  public static final String INCOMPLETE_DYNAMIC_LIBRARY_ACTION_CONFIG =
+      ""
+          + "action_config {"
+          + "   config_name: '"
+          + LinkTargetType.DYNAMIC_LIBRARY.getActionName()
+          + "'"
+          + "   action_name: '"
+          + LinkTargetType.DYNAMIC_LIBRARY.getActionName()
+          + "'"
+          + "   tool {"
+          + "      tool_path: 'DUMMY_TOOL'"
+          + "   }"
+          + "}";
+  public static final String INCOMPLETE_STATIC_LIBRARY_ACTION_CONFIG =
+      ""
+          + "action_config {"
+          + "   config_name: '"
+          + LinkTargetType.STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   action_name: '"
+          + LinkTargetType.STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   tool {"
+          + "      tool_path: 'DUMMY_TOOL'"
+          + "   }"
+          + "}";
+  public static final String INCOMPLETE_PIC_STATIC_LIBRARY_ACTION_CONFIG =
+      ""
+          + "action_config {"
+          + "   config_name: '"
+          + LinkTargetType.PIC_STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   action_name: '"
+          + LinkTargetType.PIC_STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   tool {"
+          + "      tool_path: 'DUMMY_TOOL'"
+          + "   }"
+          + "}";
+  public static final String INCOMPLETE_ALWAYS_LINK_STATIC_LIBRARY_ACTION_CONFIG =
+      ""
+          + "action_config {"
+          + "   config_name: '"
+          + LinkTargetType.ALWAYS_LINK_STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   action_name: '"
+          + LinkTargetType.ALWAYS_LINK_STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   tool {"
+          + "      tool_path: 'DUMMY_TOOL'"
+          + "   }"
+          + "}";
+  public static final String INCOMPLETE_ALWAYS_LINK_PIC_STATIC_LIBRARY_EXECUTABLE_ACTION_CONFIG =
+      ""
+          + "action_config {"
+          + "   config_name: '"
+          + LinkTargetType.ALWAYS_LINK_PIC_STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   action_name: '"
+          + LinkTargetType.ALWAYS_LINK_PIC_STATIC_LIBRARY.getActionName()
+          + "'"
+          + "   tool {"
+          + "      tool_path: 'DUMMY_TOOL'"
+          + "   }"
+          + "}";
+  public static final String INCOMPLETE_INTERFACE_DYNAMIC_LIBRARY_ACTION_CONFIG =
+      ""
+          + "action_config {"
+          + "   config_name: '"
+          + LinkTargetType.INTERFACE_DYNAMIC_LIBRARY.getActionName()
+          + "'"
+          + "   action_name: '"
+          + LinkTargetType.INTERFACE_DYNAMIC_LIBRARY.getActionName()
+          + "'"
+          + "   tool {"
+          + "      tool_path: 'DUMMY_TOOL'"
+          + "   }"
           + "}";
 
   /** Filter to remove implicit dependencies of C/C++ rules. */
@@ -203,6 +370,49 @@ public abstract class MockCcSupport {
     TextFormat.merge(original, builder);
     for (CToolchain.Builder toolchainBuilder : builder.getToolchainBuilderList()) {
       toolchainBuilder.mergeFrom(toolchain);
+    }
+    return TextFormat.printToString(builder.build());
+  }
+
+  public static String addOptionalDefaultCoptsToCrosstool(String original)
+      throws TextFormat.ParseException {
+    CrosstoolConfig.CrosstoolRelease.Builder builder =
+        CrosstoolConfig.CrosstoolRelease.newBuilder();
+    TextFormat.merge(original, builder);
+    for (CrosstoolConfig.CToolchain.Builder toolchain : builder.getToolchainBuilderList()) {
+      CrosstoolConfig.CToolchain.OptionalFlag.Builder defaultTrue =
+          CrosstoolConfig.CToolchain.OptionalFlag.newBuilder();
+      defaultTrue.setDefaultSettingName("crosstool_default_true");
+      defaultTrue.addFlag("-DDEFAULT_TRUE");
+      toolchain.addOptionalCompilerFlag(defaultTrue.build());
+      CrosstoolConfig.CToolchain.OptionalFlag.Builder defaultFalse =
+          CrosstoolConfig.CToolchain.OptionalFlag.newBuilder();
+      defaultFalse.setDefaultSettingName("crosstool_default_false");
+      defaultFalse.addFlag("-DDEFAULT_FALSE");
+      toolchain.addOptionalCompilerFlag(defaultFalse.build());
+    }
+
+    CrosstoolConfig.CrosstoolRelease.DefaultSetting.Builder defaultTrue =
+        CrosstoolConfig.CrosstoolRelease.DefaultSetting.newBuilder();
+    defaultTrue.setName("crosstool_default_true");
+    defaultTrue.setDefaultValue(true);
+    builder.addDefaultSetting(defaultTrue.build());
+    CrosstoolConfig.CrosstoolRelease.DefaultSetting.Builder defaultFalse =
+        CrosstoolConfig.CrosstoolRelease.DefaultSetting.newBuilder();
+    defaultFalse.setName("crosstool_default_false");
+    defaultFalse.setDefaultValue(false);
+    builder.addDefaultSetting(defaultFalse.build());
+
+    return TextFormat.printToString(builder.build());
+  }
+
+  public static String addLibcLabelToCrosstool(String original, String label)
+      throws TextFormat.ParseException {
+    CrosstoolConfig.CrosstoolRelease.Builder builder =
+        CrosstoolConfig.CrosstoolRelease.newBuilder();
+    TextFormat.merge(original, builder);
+    for (CrosstoolConfig.CToolchain.Builder toolchain : builder.getToolchainBuilderList()) {
+      toolchain.setDefaultGrteTop(label);
     }
     return TextFormat.printToString(builder.build());
   }
@@ -231,6 +441,11 @@ public abstract class MockCcSupport {
     setupCrosstool(config, toolchainBuilder.buildPartial());
   }
 
+  public void setupCrosstoolWithRelease(MockToolsConfig config, String crosstool)
+      throws IOException {
+    createCrosstoolPackage(config, false, true, null, null, crosstool);
+  }
+
   /**
    * Creates a crosstool package by merging {@code toolchain} with the default mock CROSSTOOL file.
    */
@@ -241,8 +456,7 @@ public abstract class MockCcSupport {
 
   /**
    * Create a crosstool package. For integration tests, it actually links in a working crosstool,
-   * for all other tests, it only creates a dummy package, with a working CROSSTOOL file. The code
-   * here matches the declarations in {@link CrosstoolTestHelper}.
+   * for all other tests, it only creates a dummy package, with a working CROSSTOOL file.
    *
    * <p>If <code>addEmbeddedRuntimes</code> is true, it also adds filegroups for the embedded
    * runtimes.
@@ -253,8 +467,7 @@ public abstract class MockCcSupport {
       boolean addModuleMap,
       String staticRuntimesLabel,
       String dynamicRuntimesLabel,
-      CToolchain toolchain)
-      throws IOException {
+      CToolchain toolchain) throws IOException {
     createCrosstoolPackage(
         config,
         addEmbeddedRuntimes,
@@ -264,16 +477,44 @@ public abstract class MockCcSupport {
         toolchain);
   }
 
+  public void setupCrosstool(
+      MockToolsConfig config,
+      boolean addEmbeddedRuntimes,
+      boolean addModuleMap,
+      String staticRuntimesLabel,
+      String dynamicRuntimesLabel,
+      String crosstool)
+      throws IOException {
+    createCrosstoolPackage(
+        config,
+        addEmbeddedRuntimes,
+        addModuleMap,
+        staticRuntimesLabel,
+        dynamicRuntimesLabel,
+        crosstool);
+  }
+
   protected static void createToolsCppPackage(MockToolsConfig config) throws IOException {
     config.create(
         "tools/cpp/BUILD",
+        "package(default_visibility = ['//visibility:public'])",
         "cc_library(name = 'stl')",
-        "filegroup(name='toolchain', srcs=['//third_party/crosstool'])");
+        "alias(name='toolchain', actual='//third_party/crosstool')",
+        "cc_library(name = 'malloc')",
+        "filegroup(",
+        "    name = 'link_dynamic_library',",
+        "    srcs = ['link_dynamic_library.sh'],",
+        ")");
+    if (config.isRealFileSystem()) {
+      config.linkTool("tools/cpp/link_dynamic_library.sh");
+    } else {
+      config.create("tools/cpp/link_dynamic_library.sh", "");
+    }
   }
 
   protected void createCrosstoolPackage(MockToolsConfig config, boolean addEmbeddedRuntimes)
       throws IOException {
-    createCrosstoolPackage(config, addEmbeddedRuntimes, /*addModuleMap=*/ true, null, null, null);
+    createCrosstoolPackage(config, addEmbeddedRuntimes, /*addModuleMap=*/ true, null, null);
   }
 
   protected String getCrosstoolTopPathForConfig(MockToolsConfig config) {
@@ -297,7 +538,18 @@ public abstract class MockCcSupport {
     }
   }
 
-  protected void createCrosstoolPackage(
+  private void createCrosstoolPackage(
+      MockToolsConfig config,
+      boolean addEmbeddedRuntimes,
+      boolean addModuleMap,
+      String staticRuntimesLabel,
+      String dynamicRuntimesLabel)
+      throws IOException {
+    createCrosstoolPackage(config, addEmbeddedRuntimes, addModuleMap, staticRuntimesLabel,
+        dynamicRuntimesLabel, readCrosstoolFile());
+  }
+
+  private void createCrosstoolPackage(
       MockToolsConfig config,
       boolean addEmbeddedRuntimes,
       boolean addModuleMap,
@@ -305,14 +557,23 @@ public abstract class MockCcSupport {
       String dynamicRuntimesLabel,
       CToolchain toolchain)
       throws IOException {
+    String crosstoolFile = mergeCrosstoolConfig(readCrosstoolFile(), toolchain);
+    createCrosstoolPackage(config, addEmbeddedRuntimes, addModuleMap, staticRuntimesLabel,
+        dynamicRuntimesLabel, crosstoolFile);
+  }
+
+  protected void createCrosstoolPackage(
+      MockToolsConfig config,
+      boolean addEmbeddedRuntimes,
+      boolean addModuleMap,
+      String staticRuntimesLabel,
+      String dynamicRuntimesLabel,
+      String crosstoolFile)
+      throws IOException {
     String crosstoolTop = getCrosstoolTopPathForConfig(config);
     if (config.isRealFileSystem()) {
       config.linkTools(getRealFilesystemTools(crosstoolTop));
     } else {
-      String crosstoolFile = readCrosstoolFile();
-      if (toolchain != null) {
-        crosstoolFile = mergeCrosstoolConfig(crosstoolFile, toolchain);
-      }
       new Crosstool(config, crosstoolTop)
           .setEmbeddedRuntimes(addEmbeddedRuntimes, staticRuntimesLabel, dynamicRuntimesLabel)
           .setCrosstoolFile(getMockCrosstoolVersion(), crosstoolFile)
@@ -323,9 +584,13 @@ public abstract class MockCcSupport {
     }
   }
 
-  protected abstract String getMockCrosstoolVersion();
+  public abstract String getMockCrosstoolVersion();
 
-  protected abstract String readCrosstoolFile() throws IOException;
+  public abstract Label getMockCrosstoolLabel();
+
+  public abstract String readCrosstoolFile() throws IOException;
+
+  public abstract String getMockLibcPath();
 
   protected abstract ImmutableList<String> getCrosstoolArchs();
 

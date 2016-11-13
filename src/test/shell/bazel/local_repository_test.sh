@@ -17,9 +17,10 @@
 # Test the local_repository binding
 #
 
-# Load test environment
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 function test_glob_local_repository_dangling_symlink() {
   create_new_workspace
@@ -208,6 +209,7 @@ function do_new_local_repository_test() {
   outside_dir=$TEST_TMPDIR/outside
   mkdir -p $outside_dir
   package_dir=$project_dir/carnivore
+  rm -rf $package_dir
   mkdir $package_dir
   # Be tricky with absolute symlinks to make sure that Bazel still acts as
   # though external repositories are immutable.
@@ -504,6 +506,28 @@ EOF
   expect_log "//external:my_repo"
 }
 
+function test_warning() {
+  local bar=$TEST_TMPDIR/bar
+  rm -rf "$bar"
+  mkdir -p "$bar"
+  touch "$bar/WORKSPACE" "$bar/BUILD"
+  cat > WORKSPACE <<EOF
+local_repository(
+    name = "bar",
+    path = "$bar",
+)
+EOF
+  touch BUILD
+  bazel build @bar//... &> $TEST_log || fail "Build failed"
+  expect_not_log "Workspace name in .* does not match the name given in the repository's definition (@bar); this will cause a build error in future versions."
+
+  cat > "$bar/WORKSPACE" <<EOF
+workspace(name = "foo")
+EOF
+  bazel build @bar//... &> $TEST_log || fail "Build failed"
+  expect_log "Workspace name in .* does not match the name given in the repository's definition (@bar); this will cause a build error in future versions."
+}
+
 function test_override_workspace_file() {
   local bar=$TEST_TMPDIR/bar
   mkdir -p "$bar"
@@ -748,6 +772,7 @@ sample_bin = rule(
         '_dep': attr.label(
             default=Label("@other//:a/b"),
             executable=True,
+            cfg="host",
             allow_files=True,
             single_file=True)
     },
@@ -1090,6 +1115,36 @@ genrule(
 EOF
 
   bazel build :* || fail "build failed"
+}
+
+# Regression test for #1697.
+function test_overwrite_build_file() {
+  local r=$TEST_TMPDIR/r
+  mkdir -p $r
+  touch $r/WORKSPACE
+  cat > $r/BUILD <<'EOF'
+genrule(
+    name = "orig"
+    cmd = "echo foo > $@",
+    outs = ["orig.out"],
+)
+EOF
+
+  cat > WORKSPACE <<EOF
+new_local_repository(
+    name = "r",
+    path = "$TEST_TMPDIR/r",
+    build_file_content = """
+genrule(
+    name = "rewrite",
+    cmd = "echo bar > \$@",
+    outs = ["rewrite.out"],
+)
+""",
+)
+EOF
+  bazel build @r//... &> $TEST_log || fail "Build failed"
+  assert_contains "orig" $r/BUILD
 }
 
 run_suite "local repository tests"

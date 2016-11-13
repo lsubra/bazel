@@ -18,25 +18,24 @@ import static com.google.devtools.build.lib.packages.Rule.ALL_LABELS;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.NoBuildEvent;
-import com.google.devtools.build.lib.collect.CompactHashSet;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.query2.AbstractBlazeQueryEnvironment;
 import com.google.devtools.build.lib.query2.engine.OutputFormatterCallback;
-import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Setting;
 import com.google.devtools.build.lib.query2.engine.QueryEvalResult;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
+import com.google.devtools.build.lib.query2.engine.QueryExpressionEvalListener;
+import com.google.devtools.build.lib.query2.engine.QueryUtil;
+import com.google.devtools.build.lib.query2.engine.QueryUtil.AggregateAllOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.output.OutputFormatter;
 import com.google.devtools.build.lib.query2.output.OutputFormatter.StreamedFormatter;
 import com.google.devtools.build.lib.query2.output.QueryOptions;
 import com.google.devtools.build.lib.query2.output.QueryOutputUtils;
 import com.google.devtools.build.lib.runtime.BlazeCommand;
-import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.Command;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
@@ -46,9 +45,8 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsProvider;
-
 import java.io.IOException;
-import java.io.PrintStream;
+import java.io.OutputStream;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -85,9 +83,7 @@ public final class QueryCommand implements BlazeCommand {
     QueryOptions queryOptions = options.getOptions(QueryOptions.class);
 
     try {
-      env.setupPackageCache(
-          options.getOptions(PackageCacheOptions.class),
-          runtime.getDefaultsPackageContent());
+      env.setupPackageCache(options, runtime.getDefaultsPackageContent());
     } catch (InterruptedException e) {
       env.getReporter().handle(Event.error("query interrupted"));
       return ExitCode.INTERRUPTED;
@@ -133,49 +129,51 @@ public final class QueryCommand implements BlazeCommand {
 
     Set<Setting> settings = queryOptions.toSettings();
     boolean streamResults = QueryOutputUtils.shouldStreamResults(queryOptions, formatter);
-    AbstractBlazeQueryEnvironment<Target> queryEnv = newQueryEnvironment(
-        env,
-        queryOptions.keepGoing,
-        !streamResults,
-        queryOptions.universeScope, queryOptions.loadingPhaseThreads,
-        settings);
-
+    QueryEvalResult result;
+    AbstractBlazeQueryEnvironment<Target> queryEnv =
+        newQueryEnvironment(
+          env,
+          queryOptions.keepGoing,
+          !streamResults,
+          queryOptions.universeScope,
+          queryOptions.loadingPhaseThreads,
+          settings);
     // 1. Parse and transform query:
     QueryExpression expr;
     try {
       expr = QueryExpression.parse(query, queryEnv);
     } catch (QueryException e) {
-      env.getReporter().handle(Event.error(
-          null, "Error while parsing '" + query + "': " + e.getMessage()));
+      env.getReporter()
+          .handle(Event.error(null, "Error while parsing '" + query + "': " + e.getMessage()));
       return ExitCode.COMMAND_LINE_ERROR;
     }
     expr = queryEnv.transformParsedQuery(expr);
 
-    QueryEvalResult result;
-    PrintStream output = null;
+    OutputStream out = env.getReporter().getOutErr().getOutputStream();
     OutputFormatterCallback<Target> callback;
     if (streamResults) {
       disableAnsiCharactersFiltering(env);
-      output = new PrintStream(env.getReporter().getOutErr().getOutputStream());
+
       // 2. Evaluate expression:
-      callback = ((StreamedFormatter) formatter)
-          .createStreamCallback(queryOptions, output, queryOptions.aspectDeps.createResolver(
-              env.getPackageManager(), env.getReporter()));
+      StreamedFormatter streamedFormatter = ((StreamedFormatter) formatter);
+      streamedFormatter.setOptions(
+          queryOptions,
+          queryOptions.aspectDeps.createResolver(env.getPackageManager(), env.getReporter()));
+      callback = streamedFormatter.createStreamCallback(out, queryOptions, queryEnv);
     } else {
-      callback = new AggregateAllOutputFormatterCallback<>();
+      callback = QueryUtil.newAggregateAllOutputFormatterCallback();
     }
     boolean catastrophe = true;
     try {
-      callback.start();
       result = queryEnv.evaluateQuery(expr, callback);
       catastrophe = false;
     } catch (QueryException e) {
       catastrophe = false;
       // Keep consistent with reportBuildFileError()
       env.getReporter()
-         // TODO(bazel-team): this is a kludge to fix a bug observed in the wild. We should make
-         // sure no null error messages ever get in.
-         .handle(Event.error(e.getMessage() == null ? e.toString() : e.getMessage()));
+          // TODO(bazel-team): this is a kludge to fix a bug observed in the wild. We should make
+          // sure no null error messages ever get in.
+          .handle(Event.error(e.getMessage() == null ? e.toString() : e.getMessage()));
       return ExitCode.ANALYSIS_FAILURE;
     } catch (InterruptedException e) {
       catastrophe = false;
@@ -193,14 +191,11 @@ public final class QueryCommand implements BlazeCommand {
       return ExitCode.LOCAL_ENVIRONMENTAL_ERROR;
     } finally {
       if (!catastrophe) {
-        if (streamResults) {
-          output.flush();
-          queryEnv.afterCommand();
-        }
         try {
-          callback.close();
+          out.flush();
         } catch (IOException e) {
-          env.getReporter().handle(Event.error("I/O error: " + e.getMessage()));
+          env.getReporter().handle(
+              Event.error("Failed to flush query results: " + e.getMessage()));
           return ExitCode.LOCAL_ENVIRONMENTAL_ERROR;
         }
       }
@@ -209,15 +204,18 @@ public final class QueryCommand implements BlazeCommand {
     env.getEventBus().post(new NoBuildEvent());
     if (!streamResults) {
       disableAnsiCharactersFiltering(env);
-      output = new PrintStream(env.getReporter().getOutErr().getOutputStream());
 
       // 3. Output results:
       try {
-        Set<Target> targets = ((AggregateAllOutputFormatterCallback<Target>) callback).getOutput();
-        QueryOutputUtils.output(queryOptions, result,
-            targets, formatter, output,
-            queryOptions.aspectDeps.createResolver(
-                env.getPackageManager(), env.getReporter()));
+        Set<Target> targets =
+            ((AggregateAllOutputFormatterCallback<Target>) callback).getResult();
+        QueryOutputUtils.output(
+            queryOptions,
+            result,
+            targets,
+            formatter,
+            env.getReporter().getOutErr().getOutputStream(),
+            queryOptions.aspectDeps.createResolver(env.getPackageManager(), env.getReporter()));
       } catch (ClosedByInterruptException | InterruptedException e) {
         env.getReporter().handle(Event.error("query interrupted"));
         return ExitCode.INTERRUPTED;
@@ -225,15 +223,11 @@ public final class QueryCommand implements BlazeCommand {
         env.getReporter().handle(Event.error("I/O error: " + e.getMessage()));
         return ExitCode.LOCAL_ENVIRONMENTAL_ERROR;
       } finally {
-        queryEnv.afterCommand();
-        // Note that PrintStream#checkError first flushes and then returns whether any
-        // error was ever encountered.
-        if (output.checkError()) {
-          // Unfortunately, there's no way to check the current error status of PrintStream
-          // without forcing a flush, so we don't know whether this error happened before or after
-          // timewise the one we already have from above. Neither choice is always correct, so we
-          // arbitrarily choose the exit code corresponding to the PrintStream's error.
-          env.getReporter().handle(Event.error("I/O error while writing query output"));
+        try {
+          out.flush();
+        } catch (IOException e) {
+          env.getReporter().handle(
+              Event.error("Failed to flush query results: " + e.getMessage()));
           return ExitCode.LOCAL_ENVIRONMENTAL_ERROR;
         }
       }
@@ -267,39 +261,23 @@ public final class QueryCommand implements BlazeCommand {
   public static AbstractBlazeQueryEnvironment<Target> newQueryEnvironment(CommandEnvironment env,
       boolean keepGoing, boolean orderedResults, List<String> universeScope,
       int loadingPhaseThreads, Set<Setting> settings) {
-    ImmutableList.Builder<QueryFunction> functions = ImmutableList.builder();
-    for (BlazeModule module : env.getRuntime().getBlazeModules()) {
-      functions.addAll(module.getQueryFunctions());
-    }
-    return env.getRuntime().getQueryEnvironmentFactory().create(
-        env.getPackageManager().newTransitiveLoader(),
-        env.getSkyframeExecutor(),
-        env.getPackageManager(),
-        env.newTargetPatternEvaluator(),
-        keepGoing,
-        /*strictScope=*/ true,
-        orderedResults,
-        universeScope,
-        loadingPhaseThreads,
-        /*labelFilter=*/ ALL_LABELS,
-        env.getReporter(),
-        settings,
-        functions.build(),
-        env.getPackageManager().getPackagePath());
-  }
-
-  private static class AggregateAllOutputFormatterCallback<T> extends OutputFormatterCallback<T> {
-
-    private Set<T> output = CompactHashSet.create();
-
-    @Override
-    protected final void processOutput(Iterable<T> partialResult)
-        throws IOException, InterruptedException {
-      Iterables.addAll(output, partialResult);
-    }
-
-    public Set<T> getOutput() {
-      return output;
-    }
+    return env.getRuntime()
+        .getQueryEnvironmentFactory()
+        .create(
+            env.getPackageManager().newTransitiveLoader(),
+            env.getSkyframeExecutor(),
+            env.getPackageManager(),
+            env.newTargetPatternEvaluator(),
+            keepGoing,
+            /*strictScope=*/ true,
+            orderedResults,
+            universeScope,
+            loadingPhaseThreads,
+            /*labelFilter=*/ ALL_LABELS,
+            env.getReporter(),
+            settings,
+            env.getRuntime().getQueryFunctions(),
+            QueryExpressionEvalListener.NullListener.<Target>instance(),
+            env.getPackageManager().getPackagePath());
   }
 }

@@ -14,32 +14,25 @@
 
 package com.google.testing.junit.runner.model;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Optional;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
 import com.google.testing.junit.runner.model.TestResult.Status;
-
-import org.joda.time.Interval;
-import org.junit.runner.Description;
-
+import com.google.testing.junit.runner.util.TestIntegration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
+import org.junit.runner.Description;
 
 /**
  * A parent node in the test suite model.
  */
 class TestSuiteNode extends TestNode {
-
-  private final List<TestNode> children = Lists.newArrayList();
+  private final List<TestNode> children = new ArrayList<>();
 
   TestSuiteNode(Description description) {
     super(description);
   }
 
-  @VisibleForTesting
+  // VisibleForTesting
   @Override
   public List<TestNode> getChildren() {
     return Collections.unmodifiableList(children);
@@ -95,9 +88,10 @@ class TestSuiteNode extends TestNode {
 
   @Override
   protected TestResult buildResult() {
-    Interval runTime = null;
-    int numTests = 0, numFailures = 0;
-    LinkedList<TestResult> childResults = Lists.newLinkedList();
+    TestInterval runTime = null;
+    int numTests = 0;
+    int numFailures = 0;
+    LinkedList<TestResult> childResults = new LinkedList<>();
 
     for (TestNode child : children) {
       TestResult childResult = child.getResult();
@@ -105,25 +99,28 @@ class TestSuiteNode extends TestNode {
       numTests += childResult.getNumTests();
       numFailures += childResult.getNumFailures();
 
-      Optional<Interval> optionalChildRunTime = childResult.getRunTimeInterval();
-      if (optionalChildRunTime.isPresent()) {
-        Interval childRunTime = optionalChildRunTime.get();
-        runTime = runTime == null ? childRunTime
-            : new Interval(Math.min(runTime.getStartMillis(), childRunTime.getStartMillis()),
-                         Math.max(runTime.getEndMillis(), childRunTime.getEndMillis()));
+      TestInterval childRunTime = childResult.getRunTimeInterval();
+      if (childRunTime != null) {
+        runTime =
+            runTime == null
+                ? childRunTime
+                : new TestInterval(
+                    Math.min(runTime.getStartMillis(), childRunTime.getStartMillis()),
+                    Math.max(runTime.getEndMillis(), childRunTime.getEndMillis()));
       }
     }
 
     return new TestResult.Builder()
         .name(getDescription().getDisplayName())
         .className("")
-        .properties(ImmutableMap.<String, String>of())
-        .failures(ImmutableList.<Throwable>of())
-        .runTimeInterval(Optional.fromNullable(runTime))
+        .properties(Collections.<String, String>emptyMap())
+        .failures(Collections.<Throwable>emptyList())
+        .runTimeInterval(runTime)
         .status(Status.SKIPPED)
         .numTests(numTests)
         .numFailures(numFailures)
         .childResults(childResults)
+        .integrations(Collections.<TestIntegration>emptySet())
         .build();
   }
 }

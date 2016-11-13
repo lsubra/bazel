@@ -25,9 +25,12 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.skylarkinterface.Param;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkCallable;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkInterfaceUtils;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
 import com.google.devtools.build.lib.syntax.EvalException.EvalExceptionWithJavaCause;
+import com.google.devtools.build.lib.syntax.Runtime.NoneType;
 import com.google.devtools.build.lib.syntax.compiler.ByteCodeMethodCalls;
 import com.google.devtools.build.lib.syntax.compiler.ByteCodeUtils;
 import com.google.devtools.build.lib.syntax.compiler.DebugInfo;
@@ -35,26 +38,28 @@ import com.google.devtools.build.lib.syntax.compiler.DebugInfo.AstAccessors;
 import com.google.devtools.build.lib.syntax.compiler.NewObject;
 import com.google.devtools.build.lib.syntax.compiler.Variable.InternalVariable;
 import com.google.devtools.build.lib.syntax.compiler.VariableScope;
+import com.google.devtools.build.lib.util.Pair;
+import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.util.StringUtilities;
-
-import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
-import net.bytebuddy.implementation.bytecode.Removal;
-import net.bytebuddy.implementation.bytecode.StackManipulation;
-import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
-import net.bytebuddy.implementation.bytecode.constant.TextConstant;
-
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
-
 import javax.annotation.Nullable;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
+import net.bytebuddy.implementation.bytecode.Removal;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
+import net.bytebuddy.implementation.bytecode.constant.TextConstant;
 
 /**
  * Syntax node for a function call expression.
@@ -88,41 +93,61 @@ public final class FuncallExpression extends Expression {
 
   private static final LoadingCache<Class<?>, Map<String, List<MethodDescriptor>>> methodCache =
       CacheBuilder.newBuilder()
-      .initialCapacity(10)
-      .maximumSize(100)
-      .build(new CacheLoader<Class<?>, Map<String, List<MethodDescriptor>>>() {
+          .initialCapacity(10)
+          .maximumSize(100)
+          .build(
+              new CacheLoader<Class<?>, Map<String, List<MethodDescriptor>>>() {
 
-        @Override
-        public Map<String, List<MethodDescriptor>> load(Class<?> key) throws Exception {
-          Map<String, List<MethodDescriptor>> methodMap = new HashMap<>();
-          for (Method method : key.getMethods()) {
-            // Synthetic methods lead to false multiple matches
-            if (method.isSynthetic()) {
-              continue;
-            }
-            SkylarkCallable callable = getAnnotationFromParentClass(
-                  method.getDeclaringClass(), method);
-            if (callable == null) {
-              continue;
-            }
-            String name = callable.name();
-            if (name.isEmpty()) {
-              name = StringUtilities.toPythonStyleFunctionName(method.getName());
-            }
-            String signature = name + "#" + method.getParameterTypes().length;
-            if (methodMap.containsKey(signature)) {
-              methodMap.get(signature).add(new MethodDescriptor(method, callable));
-            } else {
-              methodMap.put(signature, Lists.newArrayList(new MethodDescriptor(method, callable)));
-            }
-          }
-          return ImmutableMap.copyOf(methodMap);
-        }
-      });
+                @Override
+                public Map<String, List<MethodDescriptor>> load(Class<?> key) throws Exception {
+                  Map<String, List<MethodDescriptor>> methodMap = new HashMap<>();
+                  for (Method method : key.getMethods()) {
+                    // Synthetic methods lead to false multiple matches
+                    if (method.isSynthetic()) {
+                      continue;
+                    }
+                    SkylarkCallable callable = SkylarkInterfaceUtils.getSkylarkCallable(method);
+                    if (callable == null) {
+                      continue;
+                    }
+                    Preconditions.checkArgument(
+                        callable.parameters().length == 0 || !callable.structField(),
+                        "Method "
+                            + method
+                            + " was annotated with both structField and parameters.");
+                    if (callable.parameters().length > 0 || callable.mandatoryPositionals() >= 0) {
+                      int nbArgs =
+                          callable.parameters().length
+                              + Math.max(0, callable.mandatoryPositionals());
+                      Preconditions.checkArgument(
+                          nbArgs == method.getParameterTypes().length,
+                          "Method "
+                              + method
+                              + " was annotated for "
+                              + nbArgs
+                              + " arguments "
+                              + "but accept only "
+                              + method.getParameterTypes().length
+                              + " arguments.");
+                    }
+                    String name = callable.name();
+                    if (name.isEmpty()) {
+                      name = StringUtilities.toPythonStyleFunctionName(method.getName());
+                    }
+                    if (methodMap.containsKey(name)) {
+                      methodMap.get(name).add(new MethodDescriptor(method, callable));
+                    } else {
+                      methodMap.put(
+                          name, Lists.newArrayList(new MethodDescriptor(method, callable)));
+                    }
+                  }
+                  return ImmutableMap.copyOf(methodMap);
+                }
+              });
 
   /**
-   * Returns a map of methods and corresponding SkylarkCallable annotations
-   * of the methods of the classObj class reachable from Skylark.
+   * Returns a map of methods and corresponding SkylarkCallable annotations of the methods of the
+   * classObj class reachable from Skylark.
    */
   public static ImmutableMap<Method, SkylarkCallable> collectSkylarkMethodsWithAnnotation(
       Class<?> classObj) {
@@ -130,7 +155,7 @@ public final class FuncallExpression extends Expression {
     for (Method method : classObj.getMethods()) {
       // Synthetic methods lead to false multiple matches
       if (!method.isSynthetic()) {
-        SkylarkCallable annotation = getAnnotationFromParentClass(classObj, method);
+        SkylarkCallable annotation = SkylarkInterfaceUtils.getSkylarkCallable(classObj, method);
         if (annotation != null) {
           methodMap.put(method, annotation);
         }
@@ -139,37 +164,30 @@ public final class FuncallExpression extends Expression {
     return methodMap.build();
   }
 
-  @Nullable
-  private static SkylarkCallable getAnnotationFromParentClass(Class<?> classObj, Method method) {
-    boolean keepLooking = false;
-    try {
-      Method superMethod = classObj.getMethod(method.getName(), method.getParameterTypes());
-      if (classObj.isAnnotationPresent(SkylarkModule.class)
-          && superMethod.isAnnotationPresent(SkylarkCallable.class)) {
-        return superMethod.getAnnotation(SkylarkCallable.class);
-      } else {
-        keepLooking = true;
-      }
-    } catch (NoSuchMethodException e) {
-      // The class might not have the specified method, so an exceptions is OK.
-      keepLooking = true;
+  private static class ArgumentListConversionResult {
+    private final ImmutableList<Object> arguments;
+    private final String error;
+
+    private ArgumentListConversionResult(ImmutableList<Object> arguments, String error) {
+      this.arguments = arguments;
+      this.error = error;
     }
-    if (keepLooking) {
-      if (classObj.getSuperclass() != null) {
-        SkylarkCallable annotation =
-            getAnnotationFromParentClass(classObj.getSuperclass(), method);
-        if (annotation != null) {
-          return annotation;
-        }
-      }
-      for (Class<?> interfaceObj : classObj.getInterfaces()) {
-        SkylarkCallable annotation = getAnnotationFromParentClass(interfaceObj, method);
-        if (annotation != null) {
-          return annotation;
-        }
-      }
+
+    public static ArgumentListConversionResult fromArgumentList(ImmutableList<Object> arguments) {
+      return new ArgumentListConversionResult(arguments, null);
     }
-    return null;
+
+    public static ArgumentListConversionResult fromError(String error) {
+      return new ArgumentListConversionResult(null, error);
+    }
+
+    public String getError() {
+      return error;
+    }
+
+    public ImmutableList<Object> getArguments() {
+      return arguments;
+    }
   }
 
   /**
@@ -190,13 +208,6 @@ public final class FuncallExpression extends Expression {
 
   private final int numPositionalArgs;
 
-  /**
-   * Note: the grammar definition restricts the function value in a function
-   * call expression to be a global identifier; however, the representation of
-   * values in the interpreter is flexible enough to allow functions to be
-   * arbitrary expressions. In any case, the "func" expression is always
-   * evaluated, so functions and variables share a common namespace.
-   */
   public FuncallExpression(@Nullable Expression obj, Identifier func,
                            List<Argument.Passed> args) {
     this.obj = obj;
@@ -205,13 +216,6 @@ public final class FuncallExpression extends Expression {
     this.numPositionalArgs = countPositionalArguments();
   }
 
-  /**
-   * Note: the grammar definition restricts the function value in a function
-   * call expression to be a global identifier; however, the representation of
-   * values in the interpreter is flexible enough to allow functions to be
-   * arbitrary expressions. In any case, the "func" expression is always
-   * evaluated, so functions and variables share a common namespace.
-   */
   public FuncallExpression(Identifier func, List<Argument.Passed> args) {
     this(null, func, args);
   }
@@ -262,24 +266,11 @@ public final class FuncallExpression extends Expression {
   }
 
   private String functionName() {
-    String name = func.getName();
-    if (name.equals("$slice")) {
-      return "operator [:]";
-    } else if (name.equals("$index")) {
-      return "operator []";
-    } else {
-      return "function " + name;
-    }
+    return "function " + func.getName();
   }
 
   @Override
   public String toString() {
-    if (func.getName().equals("$slice")) {
-      return obj + "[" + args.get(0) + ":" + args.get(1) + "]";
-    }
-    if (func.getName().equals("$index")) {
-      return obj + "[" + args.get(0) + "]";
-    }
     StringBuilder sb = new StringBuilder();
     if (obj != null) {
       sb.append(obj).append(".");
@@ -295,32 +286,21 @@ public final class FuncallExpression extends Expression {
    * Returns the list of Skylark callable Methods of objClass with the given name
    * and argument number.
    */
-  public static List<MethodDescriptor> getMethods(Class<?> objClass, String methodName, int argNum,
+  public static List<MethodDescriptor> getMethods(Class<?> objClass, String methodName,
       Location loc) throws EvalException {
     try {
-      return methodCache.get(objClass).get(methodName + "#" + argNum);
+      return methodCache.get(objClass).get(methodName);
     } catch (ExecutionException e) {
       throw new EvalException(loc, "Method invocation failed: " + e);
     }
   }
 
   /**
-   * Returns the list of the Skylark name of all Skylark callable methods.
+   * Returns a set of the Skylark name of all Skylark callable methods for object of type {@code
+   * objClass}.
    */
-  public static List<String> getMethodNames(Class<?> objClass)
-      throws ExecutionException {
-    List<String> names = new ArrayList<>();
-    for (List<MethodDescriptor> methods : methodCache.get(objClass).values()) {
-      for (MethodDescriptor method : methods) {
-        // TODO(bazel-team): store the Skylark name in the MethodDescriptor.
-        String name = method.annotation.name();
-        if (name.isEmpty()) {
-          name = StringUtilities.toPythonStyleFunctionName(method.method.getName());
-        }
-        names.add(name);
-      }
-    }
-    return names;
+  public static Set<String> getMethodNames(Class<?> objClass) throws ExecutionException {
+    return methodCache.get(objClass).keySet();
   }
 
   static Object callMethod(MethodDescriptor methodDescriptor, String methodName, Object obj,
@@ -372,48 +352,151 @@ public final class FuncallExpression extends Expression {
   // TODO(bazel-team): If there's exactly one usable method, this works. If there are multiple
   // matching methods, it still can be a problem. Figure out how the Java compiler does it
   // exactly and copy that behaviour.
-  private MethodDescriptor findJavaMethod(
-      Class<?> objClass, String methodName, List<Object> args) throws EvalException {
-    MethodDescriptor matchingMethod = null;
-    List<MethodDescriptor> methods = getMethods(objClass, methodName, args.size(), getLocation());
+  // Throws an EvalException when it cannot find a matching function.
+  private Pair<MethodDescriptor, List<Object>> findJavaMethod(
+      Class<?> objClass, String methodName, List<Object> args, Map<String, Object> kwargs)
+      throws EvalException {
+    Pair<MethodDescriptor, List<Object>> matchingMethod = null;
+    List<MethodDescriptor> methods = getMethods(objClass, methodName, getLocation());
+    ArgumentListConversionResult argumentListConversionResult = null;
     if (methods != null) {
       for (MethodDescriptor method : methods) {
-        Class<?>[] params = method.getMethod().getParameterTypes();
-        int i = 0;
-        boolean matching = true;
-        for (Class<?> param : params) {
-          if (!param.isAssignableFrom(args.get(i).getClass())) {
-            matching = false;
-            break;
-          }
-          i++;
-        }
-        if (matching) {
-          if (matchingMethod == null) {
-            matchingMethod = method;
-          } else {
-            throw new EvalException(
-                getLocation(),
-                String.format(
-                    "Type %s has multiple matches for %s",
-                    EvalUtils.getDataTypeNameFromClass(objClass),
-                    formatMethod(args)));
+        if (!method.getAnnotation().structField()) {
+          argumentListConversionResult = convertArgumentList(args, kwargs, method);
+          if (argumentListConversionResult.getArguments() != null) {
+            if (matchingMethod == null) {
+              matchingMethod =
+                  new Pair<MethodDescriptor, List<Object>>(
+                      method, argumentListConversionResult.getArguments());
+            } else {
+              throw new EvalException(
+                  getLocation(),
+                  String.format(
+                      "Type %s has multiple matches for %s",
+                      EvalUtils.getDataTypeNameFromClass(objClass), formatMethod(args, kwargs)));
+            }
           }
         }
       }
     }
-    if (matchingMethod != null && !matchingMethod.getAnnotation().structField()) {
-      return matchingMethod;
+    if (matchingMethod == null) {
+      String errorMessage;
+      if (argumentListConversionResult == null || argumentListConversionResult.getError() == null) {
+        errorMessage =
+            String.format(
+                "Type %s has no %s",
+                EvalUtils.getDataTypeNameFromClass(objClass), formatMethod(args, kwargs));
+
+      } else {
+        errorMessage =
+            String.format(
+                "%s (in %s of %s).",
+                argumentListConversionResult.getError(),
+                formatMethod(args, kwargs),
+                EvalUtils.getDataTypeNameFromClass(objClass));
+      }
+      throw new EvalException(getLocation(), errorMessage);
     }
-    throw new EvalException(
-        getLocation(),
-        String.format(
-            "Type %s has no %s",
-            EvalUtils.getDataTypeNameFromClass(objClass),
-            formatMethod(args)));
+    return matchingMethod;
   }
 
-  private String formatMethod(List<Object> args) {
+  private static SkylarkType getType(Param param) {
+    SkylarkType type =
+        param.generic1() != Object.class
+            ? SkylarkType.of(param.type(), param.generic1())
+            : SkylarkType.of(param.type());
+    return type;
+  }
+
+  /**
+   * Constructs the parameters list to actually pass to the method, filling with default values if
+   * any. If the type does not match, returns null and fills in methodTypeMatchError with the
+   * appropriate message.
+   */
+  private ArgumentListConversionResult convertArgumentList(
+      List<Object> args, Map<String, Object> kwargs, MethodDescriptor method) {
+    ImmutableList.Builder<Object> builder = ImmutableList.builder();
+    Class<?>[] params = method.getMethod().getParameterTypes();
+    SkylarkCallable callable = method.getAnnotation();
+    int mandatoryPositionals = callable.mandatoryPositionals();
+    if (mandatoryPositionals < 0) {
+      if (callable.parameters().length > 0) {
+        mandatoryPositionals = 0;
+      } else {
+        mandatoryPositionals = params.length;
+      }
+    }
+    if (mandatoryPositionals > args.size()
+        || args.size() > mandatoryPositionals + callable.parameters().length) {
+      return ArgumentListConversionResult.fromError("Too many arguments");
+    }
+    // First process the legacy positional parameters.
+    int i = 0;
+    if (mandatoryPositionals > 0) {
+      for (Class<?> param : params) {
+        Object value = args.get(i);
+        if (!param.isAssignableFrom(value.getClass())) {
+          return ArgumentListConversionResult.fromError(
+              String.format(
+                  "Cannot convert parameter at position %d to type %s", i, param.toString()));
+        }
+        builder.add(value);
+        i++;
+        if (mandatoryPositionals >= 0 && i >= mandatoryPositionals) {
+          // Stops for specified parameters instead.
+          break;
+        }
+      }
+    }
+
+    // Then the parameters specified in callable.parameters()
+    Set<String> keys = new HashSet<>(kwargs.keySet());
+    for (Param param : callable.parameters()) {
+      SkylarkType type = getType(param);
+      if (param.noneable()) {
+        type = SkylarkType.Union.of(type, SkylarkType.NONE);
+      }
+      Object value = null;
+      if (i < args.size()) {
+        value = args.get(i);
+        if (!param.positional()) {
+          return ArgumentListConversionResult.fromError(
+              String.format("Parameter '%s' is not positional", param.name()));
+        } else if (!type.contains(value)) {
+          return ArgumentListConversionResult.fromError(
+              String.format(
+                  "Cannot convert parameter '%s' to type %s", param.name(), type.toString()));
+        }
+        i++;
+      } else if (param.named() && keys.remove(param.name())) {
+        // Named parameters
+        value = kwargs.get(param.name());
+        if (!type.contains(value)) {
+          return ArgumentListConversionResult.fromError(
+              String.format(
+                  "Cannot convert parameter '%s' to type %s", param.name(), type.toString()));
+        }
+      } else {
+        // Use default value
+        if (param.defaultValue().isEmpty()) {
+          return ArgumentListConversionResult.fromError(
+              String.format("Parameter '%s' has no default value", param.name()));
+        }
+        value = SkylarkSignatureProcessor.getDefaultValue(param, null);
+      }
+      builder.add(value);
+      if (!param.noneable() && value instanceof NoneType) {
+        return ArgumentListConversionResult.fromError(
+            String.format("Parameter '%s' cannot be None", param.name()));
+      }
+    }
+    if (i < args.size() || !keys.isEmpty()) {
+      return ArgumentListConversionResult.fromError("Too many arguments");
+    }
+    return ArgumentListConversionResult.fromArgumentList(builder.build());
+  }
+
+  private String formatMethod(List<Object> args, Map<String, Object> kwargs) {
     StringBuilder sb = new StringBuilder();
     sb.append(functionName()).append("(");
     boolean first = true;
@@ -424,11 +507,21 @@ public final class FuncallExpression extends Expression {
       sb.append(EvalUtils.getDataTypeName(obj));
       first = false;
     }
+    for (Map.Entry<String, Object> kwarg : kwargs.entrySet()) {
+      if (!first) {
+        sb.append(", ");
+      }
+      sb.append(EvalUtils.getDataTypeName(kwarg.getValue()));
+      sb.append(" ");
+      sb.append(kwarg.getKey());
+      first = false;
+    }
     return sb.append(")").toString();
   }
 
   /**
    * A {@link StackManipulation} invoking addKeywordArg.
+   *
    * <p>Kept close to the definition of the method to avoid reflection errors when changing it.
    */
   private static final StackManipulation addKeywordArg =
@@ -615,17 +708,9 @@ public final class FuncallExpression extends Expression {
         obj = value;
         objClass = value.getClass();
       }
-      if (!keyWordArgs.isEmpty()) {
-        throw new EvalException(
-            call.func.getLocation(),
-            String.format(
-                "Keyword arguments are not allowed when calling a java method"
-                    + "\nwhile calling method '%s' for type %s",
-                method,
-                EvalUtils.getDataTypeNameFromClass(objClass)));
-      }
-      MethodDescriptor methodDescriptor = call.findJavaMethod(objClass, method, positionalArgs);
-      return callMethod(methodDescriptor, method, obj, positionalArgs.toArray(), location, env);
+      Pair<MethodDescriptor, List<Object>> javaMethod =
+          call.findJavaMethod(objClass, method, positionalArgs, keyWordArgs);
+      return callMethod(javaMethod.first, method, obj, javaMethod.second.toArray(), location, env);
     }
   }
 
@@ -675,7 +760,7 @@ public final class FuncallExpression extends Expression {
     posargs.add(objValue);
     // We copy this into an ImmutableMap in the end, but we can't use an ImmutableMap.Builder, or
     // we'd still have to have a HashMap on the side for the sake of properly handling duplicates.
-    Map<String, Object> kwargs = new HashMap<>();
+    Map<String, Object> kwargs = new LinkedHashMap<>();
     evalArguments(posargs, kwargs, env);
     return invokeObjectMethod(
         func.getName(), posargs.build(), ImmutableMap.<String, Object>copyOf(kwargs), this, env);
@@ -706,8 +791,7 @@ public final class FuncallExpression extends Expression {
         String name = arg.getName();
         if (name != null && name.equals("name")) {
           Expression expr = arg.getValue();
-          return (expr != null && expr instanceof StringLiteral)
-              ? ((StringLiteral) expr).getValue() : null;
+          return (expr instanceof StringLiteral) ? ((StringLiteral) expr).getValue() : null;
         }
       }
     }

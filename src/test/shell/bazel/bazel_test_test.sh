@@ -16,15 +16,13 @@
 
 set -eu
 
-# Load test environment
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 function set_up_jobcount() {
-  tmp=${TEST_TMPDIR}/testjobs
-  # Cleanup the tempory directory
-  rm -fr ${tmp}
-  mkdir -p ${tmp}
+  tmp=$(mktemp -d ${TEST_TMPDIR}/testjobs.XXXXXXXX)
 
   # We use hardlinks to this file as a communication mechanism between
   # test runs.
@@ -82,18 +80,11 @@ function test_3_local_jobs() {
     --runs_per_test=10 //dir:test
 }
 
-function test_unlimited_local_jobs() {
-  set_up_jobcount
-  # unlimited local test jobs, so local resources enforces 3 tests in parallel.
-  bazel test --spawn_strategy=standalone --test_output=errors \
-    --local_resources=10000,3,100 --runs_per_test=10 //dir:test
-}
-
 function test_tmpdir() {
   mkdir -p foo
-  cat > foo/bar_test.sh <<EOF
+  cat > foo/bar_test.sh <<'EOF'
 #!/bin/bash
-echo "I'm a test"
+echo TEST_TMPDIR=$TEST_TMPDIR
 EOF
   chmod +x foo/bar_test.sh
   cat > foo/BUILD <<EOF
@@ -102,17 +93,27 @@ sh_test(
     srcs = ["bar_test.sh"],
 )
 EOF
-  bazel test --test_output=all -s //foo:bar_test >& $TEST_log || \
+  bazel test --test_output=all //foo:bar_test >& $TEST_log || \
     fail "Running sh_test failed"
   expect_log "TEST_TMPDIR=/.*"
 
-  cat > foo/bar_test.sh <<EOF
-#!/bin/bash
-echo "I'm a different test"
-EOF
-  bazel test --test_output=all --test_tmpdir=$TEST_TMPDIR -s //foo:bar_test \
+  bazel test --nocache_test_results --test_output=all --test_tmpdir=$TEST_TMPDIR //foo:bar_test \
     >& $TEST_log || fail "Running sh_test failed"
   expect_log "TEST_TMPDIR=$TEST_TMPDIR"
+
+  # If we run `bazel test //src/test/shell/bazel:bazel_test_test` on Linux, it
+  # will be sandboxed and this "inner test" creating /foo/bar will actually
+  # succeed. If we run it on OS X (or in general without sandboxing enabled),
+  # it will fail to create /foo/bar, since obviously we don't have write
+  # permissions.
+  if bazel test --nocache_test_results --test_output=all \
+    --test_tmpdir=/foo/bar //foo:bar_test >& $TEST_log; then
+    # We are in a sandbox.
+    expect_log "TEST_TMPDIR=/foo/bar"
+  else
+    # We are not sandboxed.
+    expect_log "Could not create TEST_TMPDIR"
+  fi
 }
 
 function test_env_vars() {
@@ -229,7 +230,7 @@ EOF
 
   bazel test --test_timeout=2 //dir:test &> $TEST_log && fail "should have timed out"
   expect_log "TIMEOUT"
-  bazel test --test_timeout=4 //dir:test || fail "expected success"
+  bazel test --test_timeout=20 //dir:test || fail "expected success"
 }
 
 # Makes sure that runs_per_test_detects_flakes detects FLAKY if any of the 5
@@ -291,6 +292,29 @@ EOF
 
   xml_log=bazel-testlogs/dir/test/test.xml
   [ -s $xml_log ] || fail "$xml_log was not present after test"
+}
+
+# Simple test that we actually enforce testonly, see #1923.
+function test_testonly_is_enforced() {
+  mkdir -p testonly
+  cat <<'EOF' >testonly/BUILD
+genrule(
+    name = "testonly",
+    srcs = [],
+    cmd = "echo testonly | tee $@",
+    outs = ["testonly.txt"],
+    testonly = 1,
+)
+genrule(
+    name = "not-testonly",
+    srcs = [":testonly"],
+    cmd = "echo should fail | tee $@",
+    outs = ["not-testonly.txt"],
+)
+EOF
+    bazel build //testonly &>$TEST_log || fail "Building //testonly failed"
+    bazel build //testonly:not-testonly &>$TEST_log && fail "Should have failed" || true
+    expect_log "'//testonly:not-testonly' depends on testonly target '//testonly:testonly'"
 }
 
 function test_always_xml_output() {

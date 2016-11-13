@@ -15,10 +15,10 @@
 package com.google.devtools.build.java.turbine.javac;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.buildjar.javac.JavacOptions;
 import com.google.devtools.build.buildjar.javac.plugins.dependency.DependencyModule;
 import com.google.devtools.build.buildjar.javac.plugins.dependency.DependencyModule.StrictJavaDeps;
 import com.google.devtools.build.buildjar.javac.plugins.dependency.StrictJavaDepsPlugin;
@@ -26,16 +26,7 @@ import com.google.devtools.build.java.turbine.TurbineOptions;
 import com.google.devtools.build.java.turbine.TurbineOptionsParser;
 import com.google.devtools.build.java.turbine.javac.JavacTurbineCompileRequest.Prune;
 import com.google.devtools.build.java.turbine.javac.ZipOutputFileManager.OutputFileObject;
-
 import com.sun.tools.javac.util.Context;
-
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.FieldVisitor;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
-
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -57,14 +48,19 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
-
 import javax.tools.StandardLocation;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.FieldVisitor;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 /**
  * An header compiler implementation based on javac.
  *
- * <p>This is a reference implementation used to develop the blaze integration, and to validate
- * the real header compilation implementation.
+ * <p>This is a reference implementation used to develop the blaze integration, and to validate the
+ * real header compilation implementation.
  */
 public class JavacTurbine implements AutoCloseable {
 
@@ -123,7 +119,7 @@ public class JavacTurbine implements AutoCloseable {
 
     ImmutableList.Builder<String> argbuilder = ImmutableList.builder();
 
-    filterJavacopts(argbuilder, turbineOptions.javacOpts());
+    argbuilder.addAll(JavacOptions.removeBazelSpecificFlags(turbineOptions.javacOpts()));
 
     // Disable compilation of implicit source files.
     // This is insurance: the sourcepath is empty, so we don't expect implicit sources.
@@ -266,8 +262,8 @@ public class JavacTurbine implements AutoCloseable {
   /**
    * Remove code attributes and private members.
    *
-   * <p>Most code will already have been removed after parsing, but the bytecode will still
-   * contain e.g. lowered class and instance initializers.
+   * <p>Most code will already have been removed after parsing, but the bytecode will still contain
+   * e.g. lowered class and instance initializers.
    */
   private static byte[] processBytecode(byte[] bytes) {
     ClassWriter cw = new ClassWriter(0);
@@ -279,18 +275,18 @@ public class JavacTurbine implements AutoCloseable {
   }
 
   /**
-   * Prune private members.
+   * Prune bytecode.
    *
-   * <p>Like ijar, turbine prunes private fields and members to improve caching
-   * and reduce output size.
+   * <p>Like ijar, turbine prunes private fields and members to improve caching and reduce output
+   * size.
    *
-   * <p>This is not always a safe optimization: it can prevent javac from emitting
-   * diagnostics e.g. when a public member is hidden by a private member which has
-   * then pruned. The impact of that is believed to be small, and as long as ijar
-   * continues to prune private members turbine should do the same for compatibility.
+   * <p>This is not always a safe optimization: it can prevent javac from emitting diagnostics e.g.
+   * when a public member is hidden by a private member which has then pruned. The impact of that is
+   * believed to be small, and as long as ijar continues to prune private members turbine should do
+   * the same for compatibility.
    *
-   * <p>Some of this work could be done during tree pruning, but it's not completely
-   * trivial to detect private members at that point (e.g. with implicit modifiers).
+   * <p>Some of this work could be done during tree pruning, but it's not completely trivial to
+   * detect private members at that point (e.g. with implicit modifiers).
    */
   static class PrivateMemberPruner extends ClassVisitor {
     public PrivateMemberPruner(ClassVisitor cv) {
@@ -312,6 +308,14 @@ public class JavacTurbine implements AutoCloseable {
       if ((access & Opcodes.ACC_PRIVATE) == Opcodes.ACC_PRIVATE) {
         return null;
       }
+      if (name.equals("<clinit>")) {
+        // drop class initializers, which are going to be empty after tree pruning
+        return null;
+      }
+      // drop synthetic methods, including bridges (see b/31653210)
+      if ((access & (Opcodes.ACC_SYNTHETIC | Opcodes.ACC_BRIDGE)) != 0) {
+        return null;
+      }
       return super.visitMethod(access, name, desc, signature, exceptions);
     }
   }
@@ -323,31 +327,6 @@ public class JavacTurbine implements AutoCloseable {
       result.add(Paths.get(element));
     }
     return result.build();
-  }
-
-  @VisibleForTesting
-  static void filterJavacopts(
-      ImmutableList.Builder<String> javacArgs, Iterable<String> defaultJavacopts) {
-    for (String opt : defaultJavacopts) {
-
-      // TODO(cushon): temporary hack until 4149f08bcc8bd1318d4021cf372ec89240ee3dbb is released
-      opt = CharMatcher.is('\'').trimFrom(opt);
-
-      if (isErrorProneFlag(opt)) {
-        // drop Error Prone's fake javacopts
-        continue;
-      }
-      javacArgs.add(opt);
-    }
-  }
-
-  /**
-   * Returns true for flags that are specific to Error Prone.
-   *
-   * <p>WARNING: keep in sync with ErrorProneOptions#isSupportedOption
-   */
-  static boolean isErrorProneFlag(String opt) {
-    return opt.startsWith("-extra_checks") || opt.startsWith("-Xep");
   }
 
   /** Extra sources in srcjars to disk. */

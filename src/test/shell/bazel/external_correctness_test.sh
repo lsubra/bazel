@@ -14,8 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 function set_up() {
   LOCAL=$(pwd)
@@ -287,7 +289,8 @@ EOF
 
 }
 
-function test_top_level_dir_changes() {
+function top_level_dir_changes_helper() {
+  batch_flag="$1"
   mkdir -p r/subdir m
   touch r/one r/subdir/two
 
@@ -305,16 +308,24 @@ genrule(
 )
 EOF
   cd m
-  bazel build @r//:fg &> $TEST_log || \
+  bazel "$batch_flag" build @r//:fg &> $TEST_log || \
     fail "Expected build to succeed"
   touch ../r/three
-  bazel build @r//:fg &> $TEST_log || \
+  bazel "$batch_flag" build @r//:fg &> $TEST_log || \
     fail "Expected build to succeed"
   assert_contains "external/r/three" bazel-genfiles/external/r/fg.out
   touch ../r/subdir/four
-  bazel build @r//:fg &> $TEST_log || \
+  bazel "$batch_flag" build @r//:fg &> $TEST_log || \
     fail "Expected build to succeed"
   assert_contains "external/r/subdir/four" bazel-genfiles/external/r/fg.out
+}
+
+function test_top_level_dir_changes_batch() {
+  top_level_dir_changes_helper --batch
+}
+
+function test_top_level_dir_changes_nobatch() {
+  top_level_dir_changes_helper --nobatch
 }
 
 run_suite "//external correctness tests"

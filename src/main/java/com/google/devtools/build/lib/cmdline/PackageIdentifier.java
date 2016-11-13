@@ -38,7 +38,6 @@ public final class PackageIdentifier implements Comparable<PackageIdentifier>, S
 
   private static final Interner<PackageIdentifier> INTERNER = Interners.newWeakInterner();
 
-
   public static PackageIdentifier create(String repository, PathFragment pkgName)
       throws LabelSyntaxException {
     return create(RepositoryName.create(repository), pkgName);
@@ -48,25 +47,15 @@ public final class PackageIdentifier implements Comparable<PackageIdentifier>, S
     return INTERNER.intern(new PackageIdentifier(repository, pkgName));
   }
 
-  public static final String DEFAULT_REPOSITORY = "";
-  public static final RepositoryName DEFAULT_REPOSITORY_NAME;
-  public static final RepositoryName MAIN_REPOSITORY_NAME;
-
-  static {
-    try {
-      DEFAULT_REPOSITORY_NAME = RepositoryName.create(DEFAULT_REPOSITORY);
-      MAIN_REPOSITORY_NAME = RepositoryName.create("@");
-    } catch (LabelSyntaxException e) {
-      throw new IllegalStateException(e);
-    }
-  }
+  public static final PackageIdentifier EMPTY_PACKAGE_ID = createInMainRepo(
+      PathFragment.EMPTY_FRAGMENT);
 
   public static PackageIdentifier createInMainRepo(String name) {
     return createInMainRepo(new PathFragment(name));
   }
 
   public static PackageIdentifier createInMainRepo(PathFragment name) {
-    return create(MAIN_REPOSITORY_NAME, name);
+    return create(RepositoryName.MAIN, name);
   }
 
   /**
@@ -98,10 +87,10 @@ public final class PackageIdentifier implements Comparable<PackageIdentifier>, S
     } else if (input.startsWith("@")) {
       throw new LabelSyntaxException("starts with a '@' but does not contain '//'");
     } else if (packageStartPos == 0) {
-      repo = PackageIdentifier.DEFAULT_REPOSITORY;
+      repo = RepositoryName.DEFAULT_REPOSITORY;
       packageName = input.substring(2);
     } else {
-      repo = PackageIdentifier.DEFAULT_REPOSITORY;
+      repo = RepositoryName.DEFAULT_REPOSITORY;
       packageName = input;
     }
 
@@ -127,19 +116,23 @@ public final class PackageIdentifier implements Comparable<PackageIdentifier>, S
   }
 
   /**
-   * Returns a relative path that should be unique across all remote and packages, based on the
-   * repository and package names.
+   * Returns a relative path to the source code for this package. Returns pkgName if this is in the
+   * main repository or external/[repository name]/[pkgName] if not.
    */
-  public PathFragment getPathFragment() {
-    return repository.getPathFragment().getRelative(pkgName);
+  public PathFragment getSourceRoot() {
+    return repository.getSourceRoot().getRelative(pkgName);
+  }
+
+  public PathFragment getPathUnderExecRoot() {
+    return getSourceRoot();
   }
 
   /**
-   * Returns the runfiles path for this repository (relative to the x.runfiles/main-repo/
+   * Returns the runfiles/execRoot path for this repository (relative to the x.runfiles/main-repo/
    * directory).
    */
   public PathFragment getRunfilesPath() {
-    return getRepository().getRunfilesPath().getRelative(getPackageFragment());
+    return repository.getRunfilesPath().getRelative(pkgName);
   }
 
   public PackageIdentifier makeAbsolute() {
@@ -147,7 +140,7 @@ public final class PackageIdentifier implements Comparable<PackageIdentifier>, S
       return this;
     }
 
-    return create(MAIN_REPOSITORY_NAME, pkgName);
+    return create(RepositoryName.MAIN, pkgName);
   }
 
   /**

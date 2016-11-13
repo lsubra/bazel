@@ -1,3 +1,9 @@
+filegroup(
+    name = "srcs",
+    srcs = glob(["**"]),
+    visibility = ["//src/test/shell/bazel:__pkg__"],
+)
+
 sh_test(
     name = "android_integration_test",
     size = "large",
@@ -11,7 +17,11 @@ sh_test(
         "//external:android_ndk_for_testing",
         "//external:android_sdk_for_testing",
         "//src/tools/android/java/com/google/devtools/build/android:AarGeneratorAction_deploy.jar",
+        "//src/tools/android/java/com/google/devtools/build/android:AndroidResourceMergingAction_deploy.jar",
+        "//src/tools/android/java/com/google/devtools/build/android:AndroidResourceParsingAction_deploy.jar",
         "//src/tools/android/java/com/google/devtools/build/android:AndroidResourceProcessingAction_deploy.jar",
+        "//src/tools/android/java/com/google/devtools/build/android:AndroidResourceValidatorAction_deploy.jar",
+        "//src/tools/android/java/com/google/devtools/build/android:RClassGeneratorAction_deploy.jar",
         "//src/tools/android/java/com/google/devtools/build/android:ResourceShrinkerAction_deploy.jar",
         "//src/tools/android/java/com/google/devtools/build/android/incrementaldeployment:srcs",
         "//src/tools/android/java/com/google/devtools/build/android/ziputils:mapper_deploy.jar",

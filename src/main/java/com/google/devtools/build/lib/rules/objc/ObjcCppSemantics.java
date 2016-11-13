@@ -15,10 +15,10 @@
 package com.google.devtools.build.lib.rules.objc;
 
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.DYNAMIC_FRAMEWORK_FILE;
+import static com.google.devtools.build.lib.rules.objc.ObjcProvider.HEADER;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.STATIC_FRAMEWORK_FILE;
 
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.actions.Root;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.rules.cpp.CppCompilationContext.Builder;
 import com.google.devtools.build.lib.rules.cpp.CppCompileActionBuilder;
@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.HeadersCheckingMode;
 import com.google.devtools.build.lib.rules.cpp.CppHelper;
 import com.google.devtools.build.lib.rules.cpp.CppSemantics;
+import com.google.devtools.build.lib.rules.cpp.HeaderDiscovery.DotdPruningMode;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
 /**
@@ -35,15 +36,18 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 public class ObjcCppSemantics implements CppSemantics {
 
   private final ObjcProvider objcProvider;
+  private final ObjcConfiguration config;
 
   /**
    * Creates an instance of ObjcCppSemantics
-   * 
-   * @param objcProvider  the provider that should be used in determining objc-specific inputs
-   *    to actions
+   *
+   * @param objcProvider the provider that should be used in determining objc-specific inputs to
+   *     actions
+   * @param config the ObjcConfiguration for this build
    */
-  public ObjcCppSemantics(ObjcProvider objcProvider) {
+  public ObjcCppSemantics(ObjcProvider objcProvider, ObjcConfiguration config) {
     this.objcProvider = objcProvider;
+    this.config = config;
   }
   
   @Override
@@ -61,6 +65,7 @@ public class ObjcCppSemantics implements CppSemantics {
     actionBuilder.addTransitiveMandatoryInputs(CppHelper.getToolchain(ruleContext).getCrosstool());
     actionBuilder.setShouldScanIncludes(false);
 
+    actionBuilder.addTransitiveMandatoryInputs(objcProvider.get(HEADER));
     actionBuilder.addTransitiveMandatoryInputs(objcProvider.get(STATIC_FRAMEWORK_FILE));
     actionBuilder.addTransitiveMandatoryInputs(objcProvider.get(DYNAMIC_FRAMEWORK_FILE));
   }
@@ -83,7 +88,16 @@ public class ObjcCppSemantics implements CppSemantics {
   }
 
   @Override
-  public Root getGreppedIncludesDirectory(RuleContext ruleContext) {
-    return null;
+  public boolean needsDotdInputPruning() {
+    return config.getDotdPruningPlan() == DotdPruningMode.USE;
+  }
+  
+  @Override
+  public void validateAttributes(RuleContext ruleContext) {
+  }
+
+  @Override
+  public boolean needsIncludeValidation() {
+    return false;
   }
 }

@@ -20,9 +20,11 @@
 
 #include <string>
 
-namespace blaze_util {
+#if defined(COMPILER_MSVC) && !defined(__alignof__)
+#define __alignof__ __alignof
+#endif  // COMPILER_MSVC && !__alignof__
 
-using std::string;
+namespace blaze_util {
 
 // The <code>Context</code> class performs the actual MD5
 // computation. It works incrementally and can be fed a single byte at
@@ -51,7 +53,7 @@ class Md5Digest {
 
   // Produces a hexadecimal string representation of this digest in the form:
   // [0-9a-f]{32}
-  string String() const;
+  std::string String() const;
 
  private:
   void Transform(const unsigned char* buffer, unsigned int len);

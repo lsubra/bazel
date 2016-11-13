@@ -14,9 +14,10 @@
 
 package com.google.devtools.build.lib.syntax;
 
+import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.util.Preconditions;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -34,15 +35,15 @@ public final class ValidationEnvironment {
 
   private final ValidationEnvironment parent;
 
-  private Set<String> variables = new HashSet<>();
+  private final Set<String> variables = new HashSet<>();
 
-  private Map<String, Location> variableLocations = new HashMap<>();
+  private final Map<String, Location> variableLocations = new HashMap<>();
 
-  private Set<String> readOnlyVariables = new HashSet<>();
+  private final Set<String> readOnlyVariables = new HashSet<>();
 
   // A stack of variable-sets which are read only but can be assigned in different
   // branches of if-else statements.
-  private Stack<Set<String>> futureReadOnlyVariables = new Stack<>();
+  private final Stack<Set<String>> futureReadOnlyVariables = new Stack<>();
 
   /**
    * Tracks the number of nested for loops that contain the statement that is currently being
@@ -154,6 +155,18 @@ public final class ValidationEnvironment {
 
     for (Statement statement : statements) {
       statement.validate(this);
+    }
+  }
+
+  public boolean validateAst(List<Statement> statements, EventHandler eventHandler) {
+    try {
+      validateAst(statements);
+      return true;
+    } catch (EvalException e) {
+      if (!e.isDueToIncompleteAST()) {
+        eventHandler.handle(Event.error(e.getLocation(), e.getMessage()));
+      }
+      return false;
     }
   }
 

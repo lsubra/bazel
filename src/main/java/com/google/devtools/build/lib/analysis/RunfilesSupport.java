@@ -28,7 +28,6 @@ import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -176,7 +175,7 @@ public final class RunfilesSupport {
     String basename = relativePath.getBaseName();
     PathFragment inputManifestPath = relativePath.replaceName(basename + ".runfiles_manifest");
     return context.getDerivedArtifact(inputManifestPath,
-        context.getConfiguration().getBinDirectory());
+        context.getConfiguration().getBinDirectory(context.getRule().getRepository()));
   }
 
   /**
@@ -262,7 +261,8 @@ public final class RunfilesSupport {
       Iterable<Artifact> allRunfilesArtifacts) {
     return context.getAnalysisEnvironment().getMiddlemanFactory().createRunfilesMiddleman(
         context.getActionOwner(), owningExecutable, allRunfilesArtifacts,
-        context.getConfiguration().getMiddlemanDirectory(), "runfiles_artifacts");
+        context.getConfiguration().getMiddlemanDirectory(context.getRule().getRepository()),
+        "runfiles_artifacts");
   }
 
   private Artifact createRunfilesMiddleman(ActionConstructionContext context,
@@ -270,7 +270,8 @@ public final class RunfilesSupport {
     return context.getAnalysisEnvironment().getMiddlemanFactory().createRunfilesMiddleman(
         context.getActionOwner(), owningExecutable,
         ImmutableList.of(artifactsMiddleman, outputManifest),
-        context.getConfiguration().getMiddlemanDirectory(), "runfiles");
+        context.getConfiguration().getMiddlemanDirectory(context.getRule().getRepository()),
+        "runfiles");
   }
 
   /**
@@ -301,7 +302,7 @@ public final class RunfilesSupport {
 
     BuildConfiguration config = context.getConfiguration();
     Artifact outputManifest = context.getDerivedArtifact(
-        outputManifestPath, config.getBinDirectory());
+        outputManifestPath, config.getBinDirectory(context.getRule().getRepository()));
     context
         .getAnalysisEnvironment()
         .registerAction(
@@ -311,8 +312,8 @@ public final class RunfilesSupport {
                 artifactsMiddleman,
                 outputManifest,
                 /*filesetTree=*/ false,
-                config.getShExecutable(),
-                config.getLocalShellEnvironment()));
+                config.getLocalShellEnvironment(),
+                config.runfilesEnabled()));
     return outputManifest;
   }
 
@@ -329,7 +330,8 @@ public final class RunfilesSupport {
     PathFragment sourcesManifestPath = executablePath.getParentDirectory().getChild(
         executablePath.getBaseName() + ".runfiles.SOURCES");
     Artifact sourceOnlyManifest = context.getDerivedArtifact(
-        sourcesManifestPath, context.getConfiguration().getBinDirectory());
+        sourcesManifestPath,
+        context.getConfiguration().getBinDirectory(context.getRule().getRepository()));
     context.getAnalysisEnvironment().registerAction(SourceManifestAction.forRunfiles(
         ManifestType.SOURCES_ONLY, context.getActionOwner(), sourceOnlyManifest, runfiles));
     return sourceOnlyManifest;

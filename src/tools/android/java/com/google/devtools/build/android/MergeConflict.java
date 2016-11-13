@@ -29,7 +29,7 @@ import java.util.Objects;
 @Immutable
 public class MergeConflict {
   private static final String CONFLICT_MESSAGE = "\n\u001B[31mCONFLICT:\u001B[0m"
-          + " %s is provided with ambigious priority from: \n\t%s\n\t%s";
+          + " %s is provided with ambiguous priority from: \n\t%s\n\t%s";
 
   private final DataKey dataKey;
   private final DataValue first;
@@ -99,11 +99,13 @@ public class MergeConflict {
       return false;
     }
     MergeConflict that = (MergeConflict) other;
-    return Objects.equals(first, that.first) && Objects.equals(second, that.second);
+    return Objects.equals(dataKey, that.dataKey)
+        && Objects.equals(first, that.first)
+        && Objects.equals(second, that.second);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(first, second);
+    return Objects.hash(dataKey, first, second);
   }
 }

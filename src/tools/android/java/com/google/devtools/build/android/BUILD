@@ -26,6 +26,22 @@ java_binary(
 )
 
 java_binary(
+    name = "AndroidResourceMergingAction",
+    main_class = "com.google.devtools.build.android.AndroidResourceMergingAction",
+    runtime_deps = [
+        ":android_builder_lib",
+    ],
+)
+
+java_binary(
+    name = "AndroidResourceParsingAction",
+    main_class = "com.google.devtools.build.android.AndroidResourceParsingAction",
+    runtime_deps = [
+        ":android_builder_lib",
+    ],
+)
+
+java_binary(
     name = "AndroidResourceProcessingAction",
     main_class = "com.google.devtools.build.android.AndroidResourceProcessingAction",
     runtime_deps = [
@@ -34,8 +50,24 @@ java_binary(
 )
 
 java_binary(
+    name = "AndroidResourceValidatorAction",
+    main_class = "com.google.devtools.build.android.AndroidResourceValidatorAction",
+    runtime_deps = [
+        ":android_builder_lib",
+    ],
+)
+
+java_binary(
     name = "ManifestMergerAction",
     main_class = "com.google.devtools.build.android.ManifestMergerAction",
+    runtime_deps = [
+        ":android_builder_lib",
+    ],
+)
+
+java_binary(
+    name = "RClassGeneratorAction",
+    main_class = "com.google.devtools.build.android.RClassGeneratorAction",
     runtime_deps = [
         ":android_builder_lib",
     ],
@@ -58,12 +90,13 @@ java_library(
     deps = [
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:package_manifest_java_proto",
-        "//src/tools/android/java/com/google/devtools/build/android/proto:serialize_format_proto",
-        "//third_party:android_common",
-        "//third_party:apache_commons_compress",
+        "//src/tools/android/java/com/google/devtools/build/android/proto:serialize_format_java_pb",
+        "//src/tools/android/java/com/google/devtools/build/android/resources",
+        "//third_party:android_common_25_0_0",
         "//third_party:asm",
         "//third_party:guava",
         "//third_party:jsr305",
+        "//third_party/java/android_databinding:exec",
         "//third_party/protobuf",
     ],
 )
@@ -75,6 +108,7 @@ filegroup(
         "//src/tools/android/java/com/google/devtools/build/android/idlclass:srcs",
         "//src/tools/android/java/com/google/devtools/build/android/incrementaldeployment:srcs",
         "//src/tools/android/java/com/google/devtools/build/android/proto:srcs",
+        "//src/tools/android/java/com/google/devtools/build/android/resources:srcs",
         "//src/tools/android/java/com/google/devtools/build/android/ziputils:srcs",
     ],
     visibility = ["//src:__pkg__"],

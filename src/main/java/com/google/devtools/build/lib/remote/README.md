@@ -4,12 +4,12 @@
 configuration. If you already have a separate Hazelcast cluster you can skip
 this step.
 
-    java -cp third_party/hazelcast/hazelcast-3.5.4.jar \
+    java -cp third_party/hazelcast/hazelcast-3.6.4.jar \
         com.hazelcast.core.server.StartServer
 
 - Then you run Bazel pointing to the Hazelcast server.
 
-    bazel build --hazelcast_node=127.0.0.1:5701 --spawn_strategy=remote \
+    bazel build --hazelcast_node=localhost:5701 --spawn_strategy=remote \
         src/tools/generate_workspace:all
 
 Above command will build generate_workspace with remote spawn strategy that uses
@@ -25,6 +25,6 @@ with default configuration.
 
 - Then run Bazel pointing to the Hazelcast server and remote worker.
 
-        bazel build --hazelcast_node=127.0.0.1:5701 \
-            --remote_worker=127.0.0.1:8080 \
+        bazel build --hazelcast_node=localhost:5701 \
+            --remote_worker=localhost:8080 \
             --spawn_strategy=remote src/tools/generate_workspace:all

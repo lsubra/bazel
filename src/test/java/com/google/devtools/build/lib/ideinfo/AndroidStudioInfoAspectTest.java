@@ -19,64 +19,62 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
 import com.google.common.collect.Iterables;
+import com.google.common.collect.ObjectArrays;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.ideinfo.androidstudio.AndroidStudioIdeInfo.ArtifactLocation;
 import com.google.devtools.build.lib.ideinfo.androidstudio.AndroidStudioIdeInfo.CRuleIdeInfo;
 import com.google.devtools.build.lib.ideinfo.androidstudio.AndroidStudioIdeInfo.CToolchainIdeInfo;
 import com.google.devtools.build.lib.ideinfo.androidstudio.AndroidStudioIdeInfo.JavaRuleIdeInfo;
 import com.google.devtools.build.lib.ideinfo.androidstudio.AndroidStudioIdeInfo.RuleIdeInfo;
 import com.google.devtools.build.lib.ideinfo.androidstudio.AndroidStudioIdeInfo.RuleIdeInfo.Kind;
-import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.ProtocolStringList;
-
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link AndroidStudioInfoAspect} validating proto's contents.
- */
+/** Tests for {@link AndroidStudioInfoAspect} validating proto's contents. */
 @RunWith(JUnit4.class)
 public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase {
 
+  @Override
+  protected final void useConfiguration(String... args) throws Exception {
+    super.useConfiguration(ObjectArrays.concat(args, "--java_header_compilation=true"));
+  }
+
   @Test
   public void testSimpleJavaLibrary() throws Exception {
-    Path buildFilePath =
-        scratch.file(
-            "com/google/example/BUILD",
-            "java_library(",
-            "    name = 'simple',",
-            "    srcs = ['simple/Simple.java']",
-            ")");
+    scratch.file(
+        "com/google/example/BUILD",
+        "java_library(",
+        "    name = 'simple',",
+        "    srcs = ['simple/Simple.java']",
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     ArtifactLocation location = ruleIdeInfo.getBuildFileArtifactLocation();
-    assertThat(location.getRelativePath()).isEqualTo("com/google/example/BUILD");
+    assertThat(Paths.get(location.getRelativePath()).toString())
+        .isEqualTo(Paths.get("com/google/example/BUILD").toString());
     assertThat(location.getIsSource()).isTrue();
-    if (testLegacyAswbPluginVersionCompatibility()) {
-      assertThat(ruleIdeInfo.getBuildFile()).isEqualTo(buildFilePath.toString());
-      assertThat(Paths.get(location.getRootPath(), location.getRelativePath()).toString())
-          .isEqualTo(buildFilePath.toString());
-      assertThat(ruleIdeInfo.getKind()).isEqualTo(Kind.JAVA_LIBRARY);
-    }
     assertThat(ruleIdeInfo.getKindString()).isEqualTo("java_library");
     assertThat(relativePathsForJavaSourcesOf(ruleIdeInfo))
         .containsExactly("com/google/example/simple/Simple.java");
     assertThat(
             transform(ruleIdeInfo.getJavaRuleIdeInfo().getJarsList(), LIBRARY_ARTIFACT_TO_STRING))
-        .containsExactly(jarString("com/google/example",
-                "libsimple.jar", "libsimple-ijar.jar", "libsimple-src.jar"));
+        .containsExactly(
+            jarString(
+                "com/google/example", "libsimple.jar", "libsimple-hjar.jar", "libsimple-src.jar"));
 
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/libsimple.jar",
-        "com/google/example/libsimple-ijar.jar",
-        "com/google/example/libsimple-src.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/libsimple.jar",
+            "com/google/example/libsimple-hjar.jar",
+            "com/google/example/libsimple-src.jar");
     assertThat(ruleIdeInfo.getJavaRuleIdeInfo().getJdeps().getRelativePath())
         .isEqualTo("com/google/example/libsimple.jdeps");
   }
@@ -90,9 +88,9 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    srcs = ['simple/Simple.java']",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
-    
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
+
     ArtifactLocation packageManifest = ruleIdeInfo.getJavaRuleIdeInfo().getPackageManifest();
     assertNotNull(packageManifest);
     assertEquals(packageManifest.getRelativePath(), "com/google/example/simple.manifest");
@@ -112,9 +110,70 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    srcs = [':gen_sources']",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     assertThat(ruleIdeInfo.getJavaRuleIdeInfo().hasPackageManifest()).isFalse();
+  }
+
+  @Test
+  public void testFilteredGenJarNotCreatedForSourceOnlyRule() throws Exception {
+    scratch.file(
+        "com/google/example/BUILD",
+        "java_library(",
+        "    name = 'simple',",
+        "    srcs = ['Test.java']",
+        ")");
+    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().hasFilteredGenJar()).isFalse();
+  }
+
+  @Test
+  public void testFilteredGenJarNotCreatedForOnlyGenRule() throws Exception {
+    scratch.file(
+        "com/google/example/BUILD",
+        "genrule(",
+        "   name = 'gen_sources',",
+        "   outs = ['Gen.java'],",
+        "   cmd = '',",
+        ")",
+        "java_library(",
+        "    name = 'simple',",
+        "    srcs = [':gen_sources']",
+        ")");
+    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().hasFilteredGenJar()).isFalse();
+  }
+
+  @Test
+  public void testFilteredGenJar() throws Exception {
+    scratch.file(
+        "com/google/example/BUILD",
+        "genrule(",
+        "   name = 'gen_sources',",
+        "   outs = ['Gen.java'],",
+        "   cmd = '',",
+        ")",
+        "genrule(",
+        "   name = 'gen_srcjar',",
+        "   outs = ['gen.srcjar'],",
+        "   cmd = '',",
+        ")",
+        "java_library(",
+        "    name = 'lib',",
+        "    srcs = [':gen_sources', ':gen_srcjar', 'Test.java']",
+        ")");
+    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib");
+    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel("//com/google/example:lib", ruleIdeInfos);
+    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().hasFilteredGenJar()).isTrue();
+    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().getFilteredGenJar().getJar().getRelativePath())
+        .isEqualTo("com/google/example/lib-filtered-gen.jar");
+    assertThat(
+            ruleIdeInfo.getJavaRuleIdeInfo().getFilteredGenJar().getSourceJar().getRelativePath())
+        .isEqualTo("com/google/example/lib-filtered-gen-src.jar");
   }
 
   @Test
@@ -134,15 +193,14 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:complex");
 
     getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
-    RuleIdeInfo complexRuleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:complex", ruleIdeInfos);
+    RuleIdeInfo complexRuleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:complex", ruleIdeInfos);
 
     assertThat(relativePathsForJavaSourcesOf(complexRuleIdeInfo))
         .containsExactly("com/google/example/complex/Complex.java");
-    assertThat(complexRuleIdeInfo.getDependenciesList())
-        .contains("//com/google/example:simple");
+    assertThat(complexRuleIdeInfo.getDependenciesList()).contains("//com/google/example:simple");
   }
-  
+
   @Test
   public void testJavaLibraryWithTransitiveDependencies() throws Exception {
     scratch.file(
@@ -166,24 +224,25 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     getRuleInfoAndVerifyLabel("//com/google/example:complex", ruleIdeInfos);
 
-    RuleIdeInfo extraComplexRuleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:extracomplex", ruleIdeInfos);
+    RuleIdeInfo extraComplexRuleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:extracomplex", ruleIdeInfos);
 
     assertThat(relativePathsForJavaSourcesOf(extraComplexRuleIdeInfo))
         .containsExactly("com/google/example/extracomplex/ExtraComplex.java");
     assertThat(extraComplexRuleIdeInfo.getDependenciesList())
         .contains("//com/google/example:complex");
 
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/libextracomplex.jar",
-        "com/google/example/libextracomplex-ijar.jar",
-        "com/google/example/libextracomplex-src.jar",
-        "com/google/example/libcomplex.jar",
-        "com/google/example/libcomplex-ijar.jar",
-        "com/google/example/libcomplex-src.jar",
-        "com/google/example/libsimple.jar",
-        "com/google/example/libsimple-ijar.jar",
-        "com/google/example/libsimple-src.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/libextracomplex.jar",
+            "com/google/example/libextracomplex-hjar.jar",
+            "com/google/example/libextracomplex-src.jar",
+            "com/google/example/libcomplex.jar",
+            "com/google/example/libcomplex-hjar.jar",
+            "com/google/example/libcomplex-src.jar",
+            "com/google/example/libsimple.jar",
+            "com/google/example/libsimple-hjar.jar",
+            "com/google/example/libsimple-src.jar");
   }
 
   @Test
@@ -215,14 +274,13 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     getRuleInfoAndVerifyLabel("//com/google/example:complex", ruleIdeInfos);
     getRuleInfoAndVerifyLabel("//com/google/example:complex1", ruleIdeInfos);
 
-    RuleIdeInfo extraComplexRuleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:extracomplex", ruleIdeInfos);
+    RuleIdeInfo extraComplexRuleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:extracomplex", ruleIdeInfos);
 
     assertThat(relativePathsForJavaSourcesOf(extraComplexRuleIdeInfo))
         .containsExactly("com/google/example/extracomplex/ExtraComplex.java");
-    assertThat(extraComplexRuleIdeInfo.getDependenciesList()).containsAllOf(
-        "//com/google/example:complex",
-        "//com/google/example:complex1");
+    assertThat(extraComplexRuleIdeInfo.getDependenciesList())
+        .containsAllOf("//com/google/example:complex", "//com/google/example:complex1");
   }
 
   @Test
@@ -248,27 +306,26 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     getRuleInfoAndVerifyLabel("//com/google/example:complex", ruleIdeInfos);
 
-    RuleIdeInfo complexRuleIdeInfo = getRuleInfoAndVerifyLabel("//com/google/example:complex",
-        ruleIdeInfos);
-    RuleIdeInfo extraComplexRuleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:extracomplex", ruleIdeInfos);
+    RuleIdeInfo complexRuleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:complex", ruleIdeInfos);
+    RuleIdeInfo extraComplexRuleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:extracomplex", ruleIdeInfos);
 
-    assertThat(complexRuleIdeInfo.getDependenciesList())
-        .contains("//com/google/example:simple");
+    assertThat(complexRuleIdeInfo.getDependenciesList()).contains("//com/google/example:simple");
 
-    assertThat(extraComplexRuleIdeInfo.getDependenciesList()).containsAllOf(
-        "//com/google/example:simple",
-        "//com/google/example:complex");
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/libextracomplex.jar",
-        "com/google/example/libextracomplex-ijar.jar",
-        "com/google/example/libextracomplex-src.jar",
-        "com/google/example/libcomplex.jar",
-        "com/google/example/libcomplex-ijar.jar",
-        "com/google/example/libcomplex-src.jar",
-        "com/google/example/libsimple.jar",
-        "com/google/example/libsimple-ijar.jar",
-        "com/google/example/libsimple-src.jar");
+    assertThat(extraComplexRuleIdeInfo.getDependenciesList())
+        .containsAllOf("//com/google/example:simple", "//com/google/example:complex");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/libextracomplex.jar",
+            "com/google/example/libextracomplex-hjar.jar",
+            "com/google/example/libextracomplex-src.jar",
+            "com/google/example/libcomplex.jar",
+            "com/google/example/libcomplex-hjar.jar",
+            "com/google/example/libcomplex-src.jar",
+            "com/google/example/libsimple.jar",
+            "com/google/example/libsimple-hjar.jar",
+            "com/google/example/libsimple-src.jar");
   }
 
   @Test
@@ -293,23 +350,23 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    name = 'megacomplex',",
         "    srcs = ['megacomplex/MegaComplex.java'],",
         "    deps = [':extracomplex'],",
-        ")"
-    );
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:megacomplex");
 
     getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     getRuleInfoAndVerifyLabel("//com/google/example:complex", ruleIdeInfos);
     getRuleInfoAndVerifyLabel("//com/google/example:extracomplex", ruleIdeInfos);
 
-    RuleIdeInfo megaComplexRuleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:megacomplex", ruleIdeInfos);
+    RuleIdeInfo megaComplexRuleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:megacomplex", ruleIdeInfos);
 
     assertThat(relativePathsForJavaSourcesOf(megaComplexRuleIdeInfo))
         .containsExactly("com/google/example/megacomplex/MegaComplex.java");
-    assertThat(megaComplexRuleIdeInfo.getDependenciesList()).containsAllOf(
-        "//com/google/example:simple",
-        "//com/google/example:complex",
-        "//com/google/example:extracomplex");
+    assertThat(megaComplexRuleIdeInfo.getDependenciesList())
+        .containsAllOf(
+            "//com/google/example:simple",
+            "//com/google/example:complex",
+            "//com/google/example:extracomplex");
   }
 
   @Test
@@ -341,18 +398,25 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(javaRuleIdeInfo).isNotNull();
     assertThat(transform(javaRuleIdeInfo.getJarsList(), LIBRARY_ARTIFACT_TO_STRING))
         .containsExactly(
-            jarString("com/google/example",
-                "a.jar", "_ijar/imp/com/google/example/a-ijar.jar", "impsrc.jar"),
-            jarString("com/google/example",
-                "b.jar", "_ijar/imp/com/google/example/b-ijar.jar", "impsrc.jar"))
+            jarString(
+                "com/google/example",
+                "a.jar",
+                "_ijar/imp/com/google/example/a-ijar.jar",
+                "impsrc.jar"),
+            jarString(
+                "com/google/example",
+                "b.jar",
+                "_ijar/imp/com/google/example/b-ijar.jar",
+                "impsrc.jar"))
         .inOrder();
 
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/_ijar/imp/com/google/example/a-ijar.jar",
-        "com/google/example/_ijar/imp/com/google/example/b-ijar.jar",
-        "com/google/example/liblib.jar",
-        "com/google/example/liblib-ijar.jar",
-        "com/google/example/liblib-src.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/_ijar/imp/com/google/example/a-ijar.jar",
+            "com/google/example/_ijar/imp/com/google/example/b-ijar.jar",
+            "com/google/example/liblib.jar",
+            "com/google/example/liblib-hjar.jar",
+            "com/google/example/liblib-src.jar");
   }
 
   @Test
@@ -384,9 +448,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     }
     assertThat(impInfo.getKindString()).isEqualTo("java_import");
     assertThat(impInfo.getDependenciesList()).contains("//com/google/example:foobar");
-    assertThat(libInfo.getDependenciesList()).containsAllOf(
-        "//com/google/example:foobar",
-        "//com/google/example:imp");
+    assertThat(libInfo.getDependenciesList())
+        .containsAllOf("//com/google/example:foobar", "//com/google/example:imp");
   }
 
   @Test
@@ -408,11 +471,11 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "   srcs = ['Lib.java'],",
         "   deps = [':imp'],",
         ")");
-    
+
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib");
     RuleIdeInfo libInfo = getRuleInfoAndVerifyLabel("//com/google/example:lib", ruleIdeInfos);
     RuleIdeInfo impInfo = getRuleInfoAndVerifyLabel("//com/google/example:imp", ruleIdeInfos);
-   
+
     assertThat(!impInfo.getJavaRuleIdeInfo().hasPackageManifest()).isTrue();
     assertThat(libInfo.getJavaRuleIdeInfo().hasPackageManifest()).isTrue();
   }
@@ -437,10 +500,11 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "   cmd = '',",
         ")");
     buildTarget("//com/google/example:imp");
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/_ijar/imp/com/google/example/gen_jar-ijar.jar",
-        "com/google/example/gen_jar.jar",
-        "com/google/example/gen_srcjar.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/_ijar/imp/com/google/example/gen_jar-ijar.jar",
+            "com/google/example/gen_jar.jar",
+            "com/google/example/gen_srcjar.jar");
   }
 
   @Test
@@ -475,10 +539,10 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "   size = 'large',",
         "   deps = [':foobar'],",
         ")");
-    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo(
-        "//java/com/google/example:FooBarTest");
-    RuleIdeInfo testInfo = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:FooBarTest", ruleIdeInfos);
+    Map<String, RuleIdeInfo> ruleIdeInfos =
+        buildRuleIdeInfo("//java/com/google/example:FooBarTest");
+    RuleIdeInfo testInfo =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:FooBarTest", ruleIdeInfos);
     if (testLegacyAswbPluginVersionCompatibility()) {
       assertThat(testInfo.getKind()).isEqualTo(Kind.JAVA_TEST);
     }
@@ -487,15 +551,16 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         .containsExactly("java/com/google/example/FooBarTest.java");
     assertThat(testInfo.getDependenciesList()).contains("//java/com/google/example:foobar");
     assertThat(transform(testInfo.getJavaRuleIdeInfo().getJarsList(), LIBRARY_ARTIFACT_TO_STRING))
-        .containsExactly(jarString("java/com/google/example",
-            "FooBarTest.jar", null, "FooBarTest-src.jar"));
+        .containsExactly(
+            jarString("java/com/google/example", "FooBarTest.jar", null, "FooBarTest-src.jar"));
 
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "java/com/google/example/libfoobar.jar",
-        "java/com/google/example/libfoobar-ijar.jar",
-        "java/com/google/example/libfoobar-src.jar",
-        "java/com/google/example/FooBarTest.jar",
-        "java/com/google/example/FooBarTest-src.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "java/com/google/example/libfoobar.jar",
+            "java/com/google/example/libfoobar-hjar.jar",
+            "java/com/google/example/libfoobar-src.jar",
+            "java/com/google/example/FooBarTest.jar",
+            "java/com/google/example/FooBarTest-src.jar");
     assertThat(testInfo.getJavaRuleIdeInfo().getJdeps().getRelativePath())
         .isEqualTo("java/com/google/example/FooBarTest.jdeps");
 
@@ -517,8 +582,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "   deps = [':foobar'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:foobar-exe");
-    RuleIdeInfo binaryInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:foobar-exe", ruleIdeInfos);
+    RuleIdeInfo binaryInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:foobar-exe", ruleIdeInfos);
 
     if (testLegacyAswbPluginVersionCompatibility()) {
       assertThat(binaryInfo.getKind()).isEqualTo(Kind.JAVA_BINARY);
@@ -529,15 +594,16 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(binaryInfo.getDependenciesList()).contains("//com/google/example:foobar");
 
     assertThat(transform(binaryInfo.getJavaRuleIdeInfo().getJarsList(), LIBRARY_ARTIFACT_TO_STRING))
-        .containsExactly(jarString("com/google/example",
-            "foobar-exe.jar", null, "foobar-exe-src.jar"));
+        .containsExactly(
+            jarString("com/google/example", "foobar-exe.jar", null, "foobar-exe-src.jar"));
 
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/libfoobar.jar",
-        "com/google/example/libfoobar-ijar.jar",
-        "com/google/example/libfoobar-src.jar",
-        "com/google/example/foobar-exe.jar",
-        "com/google/example/foobar-exe-src.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/libfoobar.jar",
+            "com/google/example/libfoobar-hjar.jar",
+            "com/google/example/libfoobar-src.jar",
+            "com/google/example/foobar-exe.jar",
+            "com/google/example/foobar-exe-src.jar");
     assertThat(binaryInfo.getJavaRuleIdeInfo().getJdeps().getRelativePath())
         .isEqualTo("com/google/example/foobar-exe.jdeps");
   }
@@ -565,9 +631,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(toolChainInfo.getJavaToolchainIdeInfo().getTargetVersion()).isNotEmpty();
 
     RuleIdeInfo a = ruleIdeInfos.get("//com/google/example:a");
-    assertThat(a.getDependenciesList()).containsAllOf(
-        "//com/google/example:b",
-        toolChainInfo.getLabel());
+    assertThat(a.getDependenciesList())
+        .containsAllOf("//com/google/example:b", toolChainInfo.getLabel());
   }
 
   @Test
@@ -610,13 +675,12 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
       assertThat(ruleInfo.getKind()).isEqualTo(Kind.ANDROID_LIBRARY);
     }
     assertThat(ruleInfo.getKindString()).isEqualTo("android_library");
-    assertThat(relativePathsForJavaSourcesOf(ruleInfo)).containsExactly("com/google/example/Main.java");
+    assertThat(relativePathsForJavaSourcesOf(ruleInfo))
+        .containsExactly("com/google/example/Main.java");
     assertThat(transform(ruleInfo.getJavaRuleIdeInfo().getJarsList(), LIBRARY_ARTIFACT_TO_STRING))
         .containsExactly(
-            jarString("com/google/example",
-                "libl.jar", "libl-ijar.jar", "libl-src.jar"),
-            jarString("com/google/example",
-                "l_resources.jar", "l_resources-ijar.jar", "l_resources-src.jar"));
+            jarString("com/google/example", "libl.jar", "libl-hjar.jar", "libl-src.jar"),
+            jarString("com/google/example", "l_resources.jar", null, "l_resources-src.jar"));
     assertThat(
             transform(
                 ruleInfo.getAndroidRuleIdeInfo().getResourcesList(), ARTIFACT_TO_RELATIVE_PATH))
@@ -625,23 +689,20 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         .isEqualTo("com/google/example/AndroidManifest.xml");
     assertThat(ruleInfo.getAndroidRuleIdeInfo().getJavaPackage()).isEqualTo("com.google.example");
     assertThat(LIBRARY_ARTIFACT_TO_STRING.apply(ruleInfo.getAndroidRuleIdeInfo().getResourceJar()))
-        .isEqualTo(jarString("com/google/example",
-            "l_resources.jar", "l_resources-ijar.jar", "l_resources-src.jar"
-        ));
+        .isEqualTo(jarString("com/google/example", "l_resources.jar", null, "l_resources-src.jar"));
 
     assertThat(ruleInfo.getDependenciesList()).contains("//com/google/example:l1");
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/libl.jar",
-        "com/google/example/libl-ijar.jar",
-        "com/google/example/libl-src.jar",
-        "com/google/example/l_resources.jar",
-        "com/google/example/l_resources-ijar.jar",
-        "com/google/example/l_resources-src.jar",
-        "com/google/example/libl1.jar",
-        "com/google/example/libl1-src.jar",
-        "com/google/example/l1_resources.jar",
-        "com/google/example/l1_resources-ijar.jar",
-        "com/google/example/l1_resources-src.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/libl.jar",
+            "com/google/example/libl-hjar.jar",
+            "com/google/example/libl-src.jar",
+            "com/google/example/l_resources.jar",
+            "com/google/example/l_resources-src.jar",
+            "com/google/example/libl1.jar",
+            "com/google/example/libl1-src.jar",
+            "com/google/example/l1_resources.jar",
+            "com/google/example/l1_resources-src.jar");
     assertThat(ruleInfo.getJavaRuleIdeInfo().getJdeps().getRelativePath())
         .isEqualTo("com/google/example/libl.jdeps");
   }
@@ -671,13 +732,12 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
       assertThat(ruleInfo.getKind()).isEqualTo(Kind.ANDROID_BINARY);
     }
     assertThat(ruleInfo.getKindString()).isEqualTo("android_binary");
-    assertThat(relativePathsForJavaSourcesOf(ruleInfo)).containsExactly("com/google/example/Main.java");
+    assertThat(relativePathsForJavaSourcesOf(ruleInfo))
+        .containsExactly("com/google/example/Main.java");
     assertThat(transform(ruleInfo.getJavaRuleIdeInfo().getJarsList(), LIBRARY_ARTIFACT_TO_STRING))
         .containsExactly(
-            jarString("com/google/example",
-                "libb.jar", "libb-ijar.jar", "libb-src.jar"),
-            jarString("com/google/example",
-                "b_resources.jar", "b_resources-ijar.jar", "b_resources-src.jar"));
+            jarString("com/google/example", "libb.jar", "libb-hjar.jar", "libb-src.jar"),
+            jarString("com/google/example", "b_resources.jar", null, "b_resources-src.jar"));
 
     assertThat(
             transform(
@@ -689,21 +749,19 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(ruleInfo.getAndroidRuleIdeInfo().getApk().getRelativePath())
         .isEqualTo("com/google/example/b.apk");
 
-
     assertThat(ruleInfo.getDependenciesList()).contains("//com/google/example:l1");
 
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/libb.jar",
-        "com/google/example/libb-ijar.jar",
-        "com/google/example/libb-src.jar",
-        "com/google/example/b_resources.jar",
-        "com/google/example/b_resources-ijar.jar",
-        "com/google/example/b_resources-src.jar",
-        "com/google/example/libl1.jar",
-        "com/google/example/libl1-src.jar",
-        "com/google/example/l1_resources.jar",
-        "com/google/example/l1_resources-ijar.jar",
-        "com/google/example/l1_resources-src.jar");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/libb.jar",
+            "com/google/example/libb-hjar.jar",
+            "com/google/example/libb-src.jar",
+            "com/google/example/b_resources.jar",
+            "com/google/example/b_resources-src.jar",
+            "com/google/example/libl1.jar",
+            "com/google/example/libl1-src.jar",
+            "com/google/example/l1_resources.jar",
+            "com/google/example/l1_resources-src.jar");
     assertThat(ruleInfo.getJavaRuleIdeInfo().getJdeps().getRelativePath())
         .isEqualTo("com/google/example/libb.jdeps");
   }
@@ -737,8 +795,7 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "android_library(",
         "  name = 'no_idl',",
         "  srcs = ['Test.java'],",
-        ")"
-    );
+        ")");
     String noIdlTarget = "//java/com/google/example:no_idl";
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo(noIdlTarget);
     RuleIdeInfo noIdlRuleInfo = getRuleInfoAndVerifyLabel(noIdlTarget, ruleIdeInfos);
@@ -753,24 +810,53 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "android_library(",
         "  name = 'has_idl',",
         "  idl_srcs = ['a.aidl'],",
-        ")"
-    );
+        ")");
     String idlTarget = "//java/com/google/example:has_idl";
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo(idlTarget);
     RuleIdeInfo idlRuleInfo = getRuleInfoAndVerifyLabel(idlTarget, ruleIdeInfos);
 
     assertThat(idlRuleInfo.getAndroidRuleIdeInfo().getHasIdlSources()).isTrue();
     assertThat(LIBRARY_ARTIFACT_TO_STRING.apply(idlRuleInfo.getAndroidRuleIdeInfo().getIdlJar()))
-        .isEqualTo(jarString("java/com/google/example",
-            "libhas_idl-idl.jar", null, "libhas_idl-idl.srcjar"));
-    assertThat(relativePathsForJavaSourcesOf(idlRuleInfo))
-        .isEmpty();
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "java/com/google/example/libhas_idl.jar",
-        "java/com/google/example/libhas_idl-ijar.jar",
-        "java/com/google/example/libhas_idl-src.jar",
-        "java/com/google/example/libhas_idl-idl.jar",
-        "java/com/google/example/libhas_idl-idl.srcjar");
+        .isEqualTo(
+            jarString(
+                "java/com/google/example", "libhas_idl-idl.jar", null, "libhas_idl-idl.srcjar"));
+    assertThat(relativePathsForJavaSourcesOf(idlRuleInfo)).isEmpty();
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "java/com/google/example/libhas_idl.jar",
+            "java/com/google/example/libhas_idl-hjar.jar",
+            "java/com/google/example/libhas_idl-src.jar",
+            "java/com/google/example/libhas_idl-idl.jar",
+            "java/com/google/example/libhas_idl-idl.srcjar");
+  }
+
+  @Test
+  public void testAndroidLibraryWithAidlWithoutImportRoot() throws Exception {
+    scratch.file(
+        "java/com/google/example/BUILD",
+        "android_library(",
+        "  name = 'no_idl_import_root',",
+        "  idl_srcs = ['a.aidl'],",
+        ")");
+    String idlTarget = "//java/com/google/example:no_idl_import_root";
+    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo(idlTarget);
+    RuleIdeInfo idlRuleInfo = getRuleInfoAndVerifyLabel(idlTarget, ruleIdeInfos);
+    assertThat(idlRuleInfo.getAndroidRuleIdeInfo().getIdlImportRoot()).isEmpty();
+  }
+
+  @Test
+  public void testAndroidLibraryWithAidlWithImportRoot() throws Exception {
+    scratch.file(
+        "java/com/google/example/BUILD",
+        "android_library(",
+        "  name = 'has_idl_import_root',",
+        "  idl_import_root = 'idl',",
+        "  idl_srcs = ['idl/com/google/example/a.aidl'],",
+        ")");
+    String idlTarget = "//java/com/google/example:has_idl_import_root";
+    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo(idlTarget);
+    RuleIdeInfo idlRuleInfo = getRuleInfoAndVerifyLabel(idlTarget, ruleIdeInfos);
+    assertThat(idlRuleInfo.getAndroidRuleIdeInfo().getIdlImportRoot()).isEqualTo("idl");
   }
 
   @Test
@@ -788,13 +874,13 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "  cmd = '',",
         ")");
     buildTarget("//com/google/example:lib");
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "com/google/example/liblib.jar",
-        "com/google/example/liblib-src.jar",
-        "com/google/example/lib_resources.jar",
-        "com/google/example/lib_resources-ijar.jar",
-        "com/google/example/lib_resources-src.jar",
-        "com/google/example/AndroidManifest.xml");
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "com/google/example/liblib.jar",
+            "com/google/example/liblib-src.jar",
+            "com/google/example/lib_resources.jar",
+            "com/google/example/lib_resources-src.jar",
+            "com/google/example/AndroidManifest.xml");
   }
 
   @Test
@@ -804,14 +890,12 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "java_library(",
         "  name = 'no_plugin',",
         "  srcs = ['Test.java'],",
-        ")"
-    );
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//java/com/google/example:no_plugin");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:no_plugin", ruleIdeInfos);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:no_plugin", ruleIdeInfos);
 
-    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().getGeneratedJarsList())
-        .isEmpty();
+    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().getGeneratedJarsList()).isEmpty();
   }
 
   @Test
@@ -831,23 +915,24 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "java_library(",
         "  name = 'plugin_lib',",
         "  srcs = ['Plugin.java'],",
-        ")"
-    );
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//java/com/google/example:test");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:test", ruleIdeInfos);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:test", ruleIdeInfos);
 
-    assertThat(transform(
-        ruleIdeInfo.getJavaRuleIdeInfo().getGeneratedJarsList(),
-        LIBRARY_ARTIFACT_TO_STRING))
-        .containsExactly(jarString("java/com/google/example",
-            "libtest-gen.jar", null, "libtest-gensrc.jar"));
-    assertThat(getIdeResolveFiles()).containsExactly(
-        "java/com/google/example/libtest.jar",
-        "java/com/google/example/libtest-ijar.jar",
-        "java/com/google/example/libtest-src.jar",
-        "java/com/google/example/libtest-gen.jar",
-        "java/com/google/example/libtest-gensrc.jar");
+    assertThat(
+            transform(
+                ruleIdeInfo.getJavaRuleIdeInfo().getGeneratedJarsList(),
+                LIBRARY_ARTIFACT_TO_STRING))
+        .containsExactly(
+            jarString("java/com/google/example", "libtest-gen.jar", null, "libtest-gensrc.jar"));
+    assertThat(getIdeResolveFiles())
+        .containsExactly(
+            "java/com/google/example/libtest.jar",
+            "java/com/google/example/libtest-hjar.jar",
+            "java/com/google/example/libtest-src.jar",
+            "java/com/google/example/libtest-gen.jar",
+            "java/com/google/example/libtest-gensrc.jar");
   }
 
   @Test
@@ -861,8 +946,7 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib");
     RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel("//com/google/example:lib", ruleIdeInfos);
-    assertThat(ruleIdeInfo.getTagsList())
-        .containsExactly("a", "b", "c", "d");
+    assertThat(ruleIdeInfo.getTagsList()).containsExactly("a", "b", "c", "d");
   }
 
   @Test
@@ -882,12 +966,35 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "  deps = [':forward'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//java/com/google/example:super");
-    RuleIdeInfo ruleInfo = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:super", ruleIdeInfos);
+    RuleIdeInfo ruleInfo =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:super", ruleIdeInfos);
 
-    assertThat(ruleInfo.getDependenciesList()).containsAllOf(
-        "//java/com/google/example:forward",
-        "//java/com/google/example:lib");
+    assertThat(ruleInfo.getDependenciesList())
+        .containsAllOf("//java/com/google/example:forward", "//java/com/google/example:lib");
+  }
+
+  @Test
+  public void testAndroidLibraryExportsDoNotOverReport() throws Exception {
+    scratch.file(
+        "com/google/example/BUILD",
+        "android_library(",
+        "  name = 'lib',",
+        "  deps = [':middle'],",
+        ")",
+        "android_library(",
+        "  name = 'middle',",
+        "  srcs = ['Middle.java'],",
+        "  deps = [':exported'],",
+        ")",
+        "android_library(",
+        "  name = 'exported',",
+        "  srcs = ['Exported.java'],",
+        ")");
+    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib");
+    RuleIdeInfo ruleInfo = getRuleInfoAndVerifyLabel("//com/google/example:lib", ruleIdeInfos);
+    RuleIdeInfo javaToolchain = Iterables.getOnlyElement(findJavaToolchain(ruleIdeInfos));
+    assertThat(ruleInfo.getDependenciesList())
+        .containsExactly(javaToolchain.getLabel(), "//com/google/example:middle");
   }
 
   @Test
@@ -906,22 +1013,18 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib");
     RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel("//com/google/example:lib", ruleIdeInfos);
     // todo(dslomov): Skylark aspect implementation does not yet return a correct root path.
-    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().getSourcesList()).containsExactly(
-        ArtifactLocation.newBuilder()
-            .setRootPath(
-                testLegacyAswbPluginVersionCompatibility()
-                    ? targetConfig.getGenfilesDirectory().getPath().getPathString() : "")
-            .setRootExecutionPathFragment(
-                targetConfig.getGenfilesDirectory().getExecPathString())
-            .setRelativePath("com/google/example/gen.java")
-            .setIsSource(false)
-            .build(),
-        ArtifactLocation.newBuilder()
-            .setRootPath(testLegacyAswbPluginVersionCompatibility()
-                ? directories.getWorkspace().getPathString() : "")
-            .setRelativePath("com/google/example/Test.java")
-            .setIsSource(true)
-            .build());
+    assertThat(ruleIdeInfo.getJavaRuleIdeInfo().getSourcesList())
+        .containsExactly(
+            ArtifactLocation.newBuilder()
+                .setRootExecutionPathFragment(
+                    targetConfig.getGenfilesDirectory(RepositoryName.MAIN).getExecPathString())
+                .setRelativePath("com/google/example/gen.java")
+                .setIsSource(false)
+                .build(),
+            ArtifactLocation.newBuilder()
+                .setRelativePath("com/google/example/Test.java")
+                .setIsSource(true)
+                .build());
   }
 
   @Test
@@ -998,12 +1101,12 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         ")");
 
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//java/com/google/example:neither");
-    RuleIdeInfo neither = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:neither", ruleIdeInfos);
-    RuleIdeInfo resourceFiles = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:resource_files", ruleIdeInfos);
-    RuleIdeInfo manifest = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:manifest", ruleIdeInfos);
+    RuleIdeInfo neither =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:neither", ruleIdeInfos);
+    RuleIdeInfo resourceFiles =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:resource_files", ruleIdeInfos);
+    RuleIdeInfo manifest =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:manifest", ruleIdeInfos);
 
     assertThat(neither.getAndroidRuleIdeInfo().getGenerateResourceClass()).isFalse();
     assertThat(resourceFiles.getAndroidRuleIdeInfo().getGenerateResourceClass()).isTrue();
@@ -1018,50 +1121,43 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "  name = 'plugin',",
         "  srcs = ['Plugin.java'],",
         "  processor_class = 'com.google.example.Plugin',",
-        ")"
-    );
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//java/com/google/example:plugin");
-    RuleIdeInfo plugin = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:plugin", ruleIdeInfos);
+    RuleIdeInfo plugin =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:plugin", ruleIdeInfos);
 
     if (testLegacyAswbPluginVersionCompatibility()) {
       assertThat(plugin.getKind()).isEqualTo(Kind.JAVA_PLUGIN);
     }
 
     assertThat(plugin.getKindString()).isEqualTo("java_plugin");
-    assertThat(transform(
-        plugin.getJavaRuleIdeInfo().getJarsList(),
-        LIBRARY_ARTIFACT_TO_STRING))
-        .containsExactly(jarString("java/com/google/example",
-            "libplugin.jar", "libplugin-ijar.jar", "libplugin-src.jar"));
+    assertThat(transform(plugin.getJavaRuleIdeInfo().getJarsList(), LIBRARY_ARTIFACT_TO_STRING))
+        .containsExactly(
+            jarString(
+                "java/com/google/example",
+                "libplugin.jar",
+                "libplugin-hjar.jar",
+                "libplugin-src.jar"));
   }
 
   @Test
   public void testSimpleCCLibraryForCCToolchainExistence() throws Exception {
-    Path buildFilePath =
-        scratch.file(
-            "com/google/example/BUILD",
-            "cc_library(",
-            "    name = 'simple',",
-            "    srcs = ['simple/simple.cc'],",
-            "    hdrs = ['simple/simple.h'],",
-            ")");
+    scratch.file(
+        "com/google/example/BUILD",
+        "cc_library(",
+        "    name = 'simple',",
+        "    srcs = ['simple/simple.cc'],",
+        "    hdrs = ['simple/simple.h'],",
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple",
-        ruleIdeInfos
-    );
-    Entry<String, RuleIdeInfo> toolchainEntry = getCcToolchainRuleAndVerifyThereIsOnlyOne(
-        ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleInfo = getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
+    Entry<String, RuleIdeInfo> toolchainEntry =
+        getCcToolchainRuleAndVerifyThereIsOnlyOne(ruleIdeInfos);
     RuleIdeInfo toolchainInfo = toolchainEntry.getValue();
     ArtifactLocation location = ruleInfo.getBuildFileArtifactLocation();
-    assertThat(location.getRelativePath()).isEqualTo("com/google/example/BUILD");
-    if (testLegacyAswbPluginVersionCompatibility()) {
-      assertThat(ruleInfo.getBuildFile()).isEqualTo(buildFilePath.toString());
-      assertThat(Paths.get(location.getRootPath(), location.getRelativePath()).toString())
-          .isEqualTo(buildFilePath.toString());
-    }
+    assertThat(Paths.get(location.getRelativePath()).toString())
+        .isEqualTo(Paths.get("com/google/example/BUILD").toString());
 
     assertThat(ruleInfo.hasCRuleIdeInfo()).isTrue();
     assertThat(ruleInfo.getDependenciesList()).hasSize(1);
@@ -1070,27 +1166,20 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
 
   @Test
   public void testSimpleCCLibrary() throws Exception {
-    Path buildFilePath =
-        scratch.file(
-            "com/google/example/BUILD",
-            "cc_library(",
-            "    name = 'simple',",
-            "    srcs = ['simple/simple.cc'],",
-            "    hdrs = ['simple/simple.h'],",
-            ")");
+    scratch.file(
+        "com/google/example/BUILD",
+        "cc_library(",
+        "    name = 'simple',",
+        "    srcs = ['simple/simple.cc'],",
+        "    hdrs = ['simple/simple.h'],",
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     ArtifactLocation location = ruleIdeInfo.getBuildFileArtifactLocation();
-    assertThat(location.getRelativePath()).isEqualTo("com/google/example/BUILD");
-
-    if (testLegacyAswbPluginVersionCompatibility()) {
-      assertThat(ruleIdeInfo.getBuildFile()).isEqualTo(buildFilePath.toString());
-      assertThat(Paths.get(location.getRootPath(), location.getRelativePath()).toString())
-          .isEqualTo(buildFilePath.toString());
-      assertThat(ruleIdeInfo.getKind()).isEqualTo(Kind.CC_LIBRARY);
-    }
+    assertThat(Paths.get(location.getRelativePath()).toString())
+        .isEqualTo(Paths.get("com/google/example/BUILD").toString());
 
     assertThat(ruleIdeInfo.getKindString()).isEqualTo("cc_library");
     assertThat(ruleIdeInfo.getDependenciesCount()).isEqualTo(1);
@@ -1113,7 +1202,7 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
 
     assertThat(ruleIdeInfo.getJavaRuleIdeInfo().getJarsList()).isEmpty();
 
-    assertThat(getIdeResolveFiles()).isEmpty();
+    assertThat(getIdeResolveFiles()).containsExactly("com/google/example/simple/simple.h");
   }
 
   @Test
@@ -1127,9 +1216,9 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    includes = ['foo/bar'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
 
     assertThat(ruleIdeInfo.hasCRuleIdeInfo()).isTrue();
     CRuleIdeInfo cRuleIdeInfo = ruleIdeInfo.getCRuleIdeInfo();
@@ -1137,8 +1226,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(cRuleIdeInfo.getRuleIncludeList()).containsExactly("foo/bar");
 
     // Make sure our understanding of where this attributes show up in other providers is correct.
-    Entry<String, RuleIdeInfo> toolchainEntry = getCcToolchainRuleAndVerifyThereIsOnlyOne(
-        ruleIdeInfos);
+    Entry<String, RuleIdeInfo> toolchainEntry =
+        getCcToolchainRuleAndVerifyThereIsOnlyOne(ruleIdeInfos);
     RuleIdeInfo toolchainInfo = toolchainEntry.getValue();
     assertThat(toolchainInfo.hasCToolchainIdeInfo()).isTrue();
     CToolchainIdeInfo cToolchainIdeInfo = toolchainInfo.getCToolchainIdeInfo();
@@ -1173,9 +1262,9 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    copts = ['-DGOPT', '-Ifoo/baz/'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
 
     assertThat(ruleIdeInfo.hasCRuleIdeInfo()).isTrue();
     CRuleIdeInfo cRuleIdeInfo = ruleIdeInfo.getCRuleIdeInfo();
@@ -1183,8 +1272,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(cRuleIdeInfo.getRuleCoptList()).containsExactly("-DGOPT", "-Ifoo/baz/");
 
     // Make sure our understanding of where this attributes show up in other providers is correct.
-    Entry<String, RuleIdeInfo> toolchainEntry = getCcToolchainRuleAndVerifyThereIsOnlyOne(
-        ruleIdeInfos);
+    Entry<String, RuleIdeInfo> toolchainEntry =
+        getCcToolchainRuleAndVerifyThereIsOnlyOne(ruleIdeInfos);
     RuleIdeInfo toolchainInfo = toolchainEntry.getValue();
     assertThat(toolchainInfo.hasCToolchainIdeInfo()).isTrue();
     CToolchainIdeInfo cToolchainIdeInfo = toolchainInfo.getCToolchainIdeInfo();
@@ -1212,9 +1301,9 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    defines = ['VERSION2'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
 
     assertThat(ruleIdeInfo.hasCRuleIdeInfo()).isTrue();
     CRuleIdeInfo cRuleIdeInfo = ruleIdeInfo.getCRuleIdeInfo();
@@ -1228,25 +1317,19 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
 
   @Test
   public void testSimpleCCBinary() throws Exception {
-    Path buildFilePath =
-        scratch.file(
-            "com/google/example/BUILD",
-            "cc_binary(",
-            "    name = 'simple',",
-            "    srcs = ['simple/simple.cc'],",
-            ")");
+    scratch.file(
+        "com/google/example/BUILD",
+        "cc_binary(",
+        "    name = 'simple',",
+        "    srcs = ['simple/simple.cc'],",
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     ArtifactLocation location = ruleIdeInfo.getBuildFileArtifactLocation();
-    assertThat(location.getRelativePath()).isEqualTo("com/google/example/BUILD");
-    if (testLegacyAswbPluginVersionCompatibility()) {
-      assertThat(ruleIdeInfo.getBuildFile()).isEqualTo(buildFilePath.toString());
-      assertThat(Paths.get(location.getRootPath(), location.getRelativePath()).toString())
-          .isEqualTo(buildFilePath.toString());
-      assertThat(ruleIdeInfo.getKind()).isEqualTo(Kind.CC_BINARY);
-    }
+    assertThat(Paths.get(location.getRelativePath()).toString())
+        .isEqualTo(Paths.get("com/google/example/BUILD").toString());
     assertThat(ruleIdeInfo.getKindString()).isEqualTo("cc_binary");
     assertThat(ruleIdeInfo.getDependenciesCount()).isEqualTo(1);
 
@@ -1269,25 +1352,19 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
 
   @Test
   public void testSimpleCCTest() throws Exception {
-    Path buildFilePath =
-        scratch.file(
-            "com/google/example/BUILD",
-            "cc_test(",
-            "    name = 'simple',",
-            "    srcs = ['simple/simple.cc'],",
-            ")");
+    scratch.file(
+        "com/google/example/BUILD",
+        "cc_test(",
+        "    name = 'simple',",
+        "    srcs = ['simple/simple.cc'],",
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     ArtifactLocation location = ruleIdeInfo.getBuildFileArtifactLocation();
-    assertThat(location.getRelativePath()).isEqualTo("com/google/example/BUILD");
-    if (testLegacyAswbPluginVersionCompatibility()) {
-      assertThat(ruleIdeInfo.getBuildFile()).isEqualTo(buildFilePath.toString());
-      assertThat(Paths.get(location.getRootPath(), location.getRelativePath()).toString())
-          .isEqualTo(buildFilePath.toString());
-      assertThat(ruleIdeInfo.getKind()).isEqualTo(Kind.CC_TEST);
-    }
+    assertThat(Paths.get(location.getRelativePath()).toString())
+        .isEqualTo(Paths.get("com/google/example/BUILD").toString());
     assertThat(ruleIdeInfo.getKindString()).isEqualTo("cc_test");
     assertThat(ruleIdeInfo.getDependenciesCount()).isEqualTo(1);
 
@@ -1310,26 +1387,31 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
 
   @Test
   public void testSimpleCCLibraryWithDeps() throws Exception {
+    // Specify '-fPIC' so that compilation output filenames are consistent for mac and linux.
     scratch.file(
         "com/google/example/BUILD",
         "cc_library(",
-        "   name = 'lib',",
-        "   srcs = ['lib/lib.cc'],",
-        "   hdrs = ['lib/lib.h'],",
+        "    name = 'lib',",
+        "    srcs = ['lib/lib.cc'],",
+        "    hdrs = ['lib/lib.h'],",
         ")",
         "cc_library(",
         "    name = 'simple',",
         "    srcs = ['simple/simple.cc'],",
         "    hdrs = ['simple/simple.h'],",
         "    deps = [':lib'],",
+        "    nocopts = '-fPIC',",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(3);
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(3);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
 
     assertThat(ruleIdeInfo.getDependenciesList()).contains("//com/google/example:lib");
     assertThat(ruleIdeInfo.getDependenciesList()).hasSize(2);
+
+    assertThat(getIdeCompileFiles())
+        .containsExactly("com/google/example/_objs/simple/com/google/example/simple/simple.o");
   }
 
   @Test
@@ -1347,8 +1429,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    hdrs = ['simple/simple.h'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:androidlib");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:androidlib", ruleIdeInfos);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:androidlib", ruleIdeInfos);
 
     assertThat(ruleIdeInfo.getDependenciesList()).contains("//com/google/example:simple");
   }
@@ -1371,9 +1453,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    deps = [':lib2'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib1");
-    assertThat(ruleIdeInfos.size()).isEqualTo(3);
-    RuleIdeInfo lib1 = getRuleInfoAndVerifyLabel(
-        "//com/google/example:lib1", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(3);
+    RuleIdeInfo lib1 = getRuleInfoAndVerifyLabel("//com/google/example:lib1", ruleIdeInfos);
 
     assertThat(lib1.hasCRuleIdeInfo()).isTrue();
     CRuleIdeInfo cRuleIdeInfo = lib1.getCRuleIdeInfo();
@@ -1381,8 +1462,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(cRuleIdeInfo.getRuleIncludeList()).containsExactly("foo/bar");
 
     // Make sure our understanding of where this attributes show up in other providers is correct.
-    Entry<String, RuleIdeInfo> toolchainEntry = getCcToolchainRuleAndVerifyThereIsOnlyOne(
-        ruleIdeInfos);
+    Entry<String, RuleIdeInfo> toolchainEntry =
+        getCcToolchainRuleAndVerifyThereIsOnlyOne(ruleIdeInfos);
     RuleIdeInfo toolchainInfo = toolchainEntry.getValue();
     assertThat(toolchainInfo.hasCToolchainIdeInfo()).isTrue();
     CToolchainIdeInfo cToolchainIdeInfo = toolchainInfo.getCToolchainIdeInfo();
@@ -1432,9 +1513,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    deps = [':lib2'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib1");
-    assertThat(ruleIdeInfos.size()).isEqualTo(3);
-    RuleIdeInfo lib1 = getRuleInfoAndVerifyLabel(
-        "//com/google/example:lib1", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(3);
+    RuleIdeInfo lib1 = getRuleInfoAndVerifyLabel("//com/google/example:lib1", ruleIdeInfos);
 
     assertThat(lib1.hasCRuleIdeInfo()).isTrue();
     CRuleIdeInfo cRuleIdeInfo = lib1.getCRuleIdeInfo();
@@ -1442,8 +1522,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
     assertThat(cRuleIdeInfo.getRuleCoptList()).containsExactly("-DGOPT", "-Ifoo/baz/");
 
     // Make sure our understanding of where this attributes show up in other providers is correct.
-    Entry<String, RuleIdeInfo> toolchainEntry = getCcToolchainRuleAndVerifyThereIsOnlyOne(
-        ruleIdeInfos);
+    Entry<String, RuleIdeInfo> toolchainEntry =
+        getCcToolchainRuleAndVerifyThereIsOnlyOne(ruleIdeInfos);
     RuleIdeInfo toolchainInfo = toolchainEntry.getValue();
     assertThat(toolchainInfo.hasCToolchainIdeInfo()).isTrue();
     CToolchainIdeInfo cToolchainIdeInfo = toolchainInfo.getCToolchainIdeInfo();
@@ -1484,9 +1564,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    deps = [':lib2'],",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:lib1");
-    assertThat(ruleIdeInfos.size()).isEqualTo(3);
-    RuleIdeInfo lib1 = getRuleInfoAndVerifyLabel(
-        "//com/google/example:lib1", ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(3);
+    RuleIdeInfo lib1 = getRuleInfoAndVerifyLabel("//com/google/example:lib1", ruleIdeInfos);
 
     assertThat(lib1.hasCRuleIdeInfo()).isTrue();
     CRuleIdeInfo cRuleIdeInfo = lib1.getCRuleIdeInfo();
@@ -1516,8 +1595,8 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    name = 'simple',",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//java/com/google/example:simple");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//java/com/google/example:simple", ruleIdeInfos);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//java/com/google/example:simple", ruleIdeInfos);
     if (testLegacyAswbPluginVersionCompatibility()) {
       assertThat(ruleIdeInfo.getKind()).isEqualTo(Kind.ANDROID_BINARY);
     }
@@ -1541,30 +1620,22 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
 
   @Test
   public void testCcToolchainInfoIsOnlyPresentForToolchainRules() throws Exception {
-    Path buildFilePath =
-        scratch.file(
-            "com/google/example/BUILD",
-            "cc_library(",
-            "    name = 'simple',",
-            "    srcs = ['simple/simple.cc'],",
-            "    hdrs = ['simple/simple.h'],",
-            ")");
+    scratch.file(
+        "com/google/example/BUILD",
+        "cc_library(",
+        "    name = 'simple',",
+        "    srcs = ['simple/simple.cc'],",
+        "    hdrs = ['simple/simple.h'],",
+        ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    assertThat(ruleIdeInfos.size()).isEqualTo(2);
-    RuleIdeInfo ruleInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple",
-        ruleIdeInfos
-    );
-    Entry<String, RuleIdeInfo> toolchainEntry = getCcToolchainRuleAndVerifyThereIsOnlyOne(
-        ruleIdeInfos);
+    assertThat(ruleIdeInfos).hasSize(2);
+    RuleIdeInfo ruleInfo = getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
+    Entry<String, RuleIdeInfo> toolchainEntry =
+        getCcToolchainRuleAndVerifyThereIsOnlyOne(ruleIdeInfos);
     RuleIdeInfo toolchainInfo = toolchainEntry.getValue();
     ArtifactLocation location = ruleInfo.getBuildFileArtifactLocation();
-    assertThat(location.getRelativePath()).isEqualTo("com/google/example/BUILD");
-    if (testLegacyAswbPluginVersionCompatibility()) {
-      assertThat(ruleInfo.getBuildFile()).isEqualTo(buildFilePath.toString());
-      assertThat(Paths.get(location.getRootPath(), location.getRelativePath()).toString())
-          .isEqualTo(buildFilePath.toString());
-    }
+    assertThat(Paths.get(location.getRelativePath()).toString())
+        .isEqualTo(Paths.get("com/google/example/BUILD").toString());
 
     assertThat(ruleInfo.hasCToolchainIdeInfo()).isFalse();
     assertThat(toolchainInfo.hasCToolchainIdeInfo()).isTrue();
@@ -1579,24 +1650,68 @@ public class AndroidStudioInfoAspectTest extends AndroidStudioInfoAspectTestBase
         "    srcs = ['simple/Simple.java']",
         ")");
     Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:simple");
-    RuleIdeInfo ruleIdeInfo = getRuleInfoAndVerifyLabel(
-        "//com/google/example:simple", ruleIdeInfos);
+    RuleIdeInfo ruleIdeInfo =
+        getRuleInfoAndVerifyLabel("//com/google/example:simple", ruleIdeInfos);
     assertThat(ruleIdeInfo.hasCRuleIdeInfo()).isFalse();
   }
 
+  @Test
+  public void testAlias() throws Exception {
+    scratch.file(
+        "com/google/example/BUILD",
+        "java_library(",
+        "    name = 'test',",
+        "    srcs = ['Test.java'],",
+        "    deps = [':alias']",
+        ")",
+        "alias(",
+        "    name = 'alias',",
+        "    actual = ':alias2',",
+        ")",
+        "alias(",
+        "    name = 'alias2',",
+        "    actual = ':real',",
+        ")",
+        "java_library(",
+        "    name = 'real',",
+        "    srcs = ['Real.java'],",
+        ")");
+    Map<String, RuleIdeInfo> ruleIdeInfos = buildRuleIdeInfo("//com/google/example:test");
+    RuleIdeInfo testInfo = getRuleInfoAndVerifyLabel("//com/google/example:test", ruleIdeInfos);
+    assertThat(testInfo.getDependenciesList()).contains("//com/google/example:real");
+    assertThat(getRuleInfoAndVerifyLabel("//com/google/example:real", ruleIdeInfos)).isNotNull();
+  }
+
+  @Test
+  public void testDataModeDepsAttributeDoesNotCrashAspect() throws Exception {
+    scratch.file(
+        "com/google/example/foo.bzl",
+        "def impl(ctx):",
+        "  return struct()",
+        "",
+        "foo = rule(",
+        "  implementation=impl,",
+        "  attrs={'deps': attr.label_list(cfg='data')},",
+        ")");
+    scratch.file(
+        "com/google/example/BUILD",
+        "load('//com/google/example:foo.bzl', 'foo')",
+        "foo(",
+        "  name='foo',",
+        ")");
+    buildRuleIdeInfo("//com/google/example:foo");
+  }
+
   /**
-   * Returns true if we are testing the native aspect, not the Skylark one.
-   * Eventually Skylark aspect will be equivalent to a native one, and this method
-   * will be removed.
+   * Returns true if we are testing the native aspect, not the Skylark one. Eventually Skylark
+   * aspect will be equivalent to a native one, and this method will be removed.
    */
   @Override
   protected boolean isNativeTest() {
     return true;
   }
 
-  /**
-   * Test for Skylark version of the aspect.
-   */
+  /** Test for Skylark version of the aspect. */
   @RunWith(JUnit4.class)
   public static class IntelliJSkylarkAspectTest extends AndroidStudioInfoAspectTest {
 

@@ -15,18 +15,15 @@
 package com.google.devtools.build.lib.rules.test;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Root;
 import com.google.devtools.build.lib.analysis.AnalysisEnvironment;
-import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.analysis.PrerequisiteArtifacts;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.RunfilesSupport;
-import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -35,12 +32,14 @@ import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.packages.TestSize;
 import com.google.devtools.build.lib.packages.TestTimeout;
 import com.google.devtools.build.lib.rules.test.TestProvider.TestParams;
+import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.EnumConverter;
 
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import javax.annotation.Nullable;
 
@@ -59,7 +58,7 @@ public final class TestActionBuilder {
 
   public TestActionBuilder(RuleContext ruleContext) {
     this.ruleContext = ruleContext;
-    this.extraEnv = ImmutableMap.of();
+    this.extraEnv = new TreeMap<>();
   }
 
   /**
@@ -114,9 +113,8 @@ public final class TestActionBuilder {
     return this;
   }
 
-  public TestActionBuilder setExtraEnv(@Nullable Map<String, String> extraEnv) {
-    this.extraEnv = extraEnv == null
-        ? ImmutableMap.<String, String> of() : ImmutableMap.copyOf(extraEnv);
+  public TestActionBuilder addExtraEnv(Map<String, String> extraEnv) {
+    this.extraEnv.putAll(extraEnv);
     return this;
   }
 
@@ -184,7 +182,7 @@ public final class TestActionBuilder {
     PathFragment targetName = new PathFragment(ruleContext.getLabel().getName());
     BuildConfiguration config = ruleContext.getConfiguration();
     AnalysisEnvironment env = ruleContext.getAnalysisEnvironment();
-    Root root = config.getTestLogsDirectory();
+    Root root = config.getTestLogsDirectory(ruleContext.getRule().getRepository());
 
     NestedSetBuilder<Artifact> inputsBuilder = NestedSetBuilder.stableOrder();
     inputsBuilder.addTransitive(
@@ -199,30 +197,33 @@ public final class TestActionBuilder {
     final boolean collectCodeCoverage = config.isCodeCoverageEnabled()
         && instrumentedFiles != null;
 
+    TreeMap<String, String> testEnv = new TreeMap<>();
+
     TestTargetExecutionSettings executionSettings;
     if (collectCodeCoverage) {
+      inputsBuilder.addTransitive(instrumentedFiles.getCoverageSupportFiles());
       // Add instrumented file manifest artifact to the list of inputs. This file will contain
       // exec paths of all source files that should be included into the code coverage output.
       NestedSet<Artifact> metadataFiles = instrumentedFiles.getInstrumentationMetadataFiles();
       inputsBuilder.addTransitive(metadataFiles);
-      for (TransitiveInfoCollection dep :
-          ruleContext.getPrerequisites(":coverage_support", Mode.HOST)) {
-        inputsBuilder.addTransitive(dep.getProvider(FileProvider.class).getFilesToBuild());
-      }
-      for (TransitiveInfoCollection dep :
-          ruleContext.getPrerequisites(":gcov", Mode.HOST)) {
-        inputsBuilder.addTransitive(dep.getProvider(FileProvider.class).getFilesToBuild());
-      }
+      inputsBuilder.addTransitive(PrerequisiteArtifacts.nestedSet(
+          ruleContext, "$coverage_support", Mode.HOST));
+
       Artifact instrumentedFileManifest =
           InstrumentedFileManifestAction.getInstrumentedFileManifest(ruleContext,
               instrumentedFiles.getInstrumentedFiles(), metadataFiles);
       executionSettings = new TestTargetExecutionSettings(ruleContext, runfilesSupport,
           executable, instrumentedFileManifest, shards);
       inputsBuilder.add(instrumentedFileManifest);
+      for (Pair<String, String> coverageEnvEntry : instrumentedFiles.getCoverageEnvironment()) {
+        testEnv.put(coverageEnvEntry.getFirst(), coverageEnvEntry.getSecond());
+      }
     } else {
       executionSettings = new TestTargetExecutionSettings(ruleContext, runfilesSupport,
           executable, null, shards);
     }
+
+    testEnv.putAll(extraEnv);
 
     if (config.getRunUnder() != null) {
       Artifact runUnderExecutable = executionSettings.getRunUnderExecutable();
@@ -240,41 +241,56 @@ public final class TestActionBuilder {
 
     for (int run = 0; run < runsPerTest; run++) {
       // Use a 1-based index for user friendliness.
-      String runSuffix =
-          runsPerTest > 1 ? String.format("_run_%d_of_%d", run + 1, runsPerTest) : "";
+      String testRunDir =
+          runsPerTest > 1 ? String.format("run_%d_of_%d", run + 1, runsPerTest) : "";
       for (int shard = 0; shard < shardRuns; shard++) {
-        String suffix = (shardRuns > 1 ? String.format("_shard_%d_of_%d", shard + 1, shards) : "")
-            + runSuffix;
-        Artifact testLog = ruleContext.getPackageRelativeArtifact(
-            targetName.getRelative("test" + suffix + ".log"), root);
-        Artifact cacheStatus = ruleContext.getPackageRelativeArtifact(
-            targetName.getRelative("test" + suffix + ".cache_status"), root);
+        String shardRunDir =
+            (shardRuns > 1 ? String.format("shard_%d_of_%d", shard + 1, shards) : "");
+        if (testRunDir.isEmpty()) {
+          shardRunDir = shardRunDir.isEmpty() ? "" : shardRunDir + PathFragment.SEPARATOR_CHAR;
+        } else {
+          testRunDir += PathFragment.SEPARATOR_CHAR;
+          shardRunDir = shardRunDir.isEmpty() ? testRunDir : shardRunDir + "_" + testRunDir;
+        }
+        Artifact testLog =
+            ruleContext.getPackageRelativeArtifact(
+                targetName.getRelative(shardRunDir + "test.log"), root);
+        Artifact cacheStatus =
+            ruleContext.getPackageRelativeArtifact(
+                targetName.getRelative(shardRunDir + "test.cache_status"), root);
 
         Artifact coverageArtifact = null;
         if (collectCodeCoverage) {
           coverageArtifact = ruleContext.getPackageRelativeArtifact(
-              targetName.getRelative("coverage" + suffix + ".dat"), root);
+              targetName.getRelative(shardRunDir + "coverage.dat"), root);
           coverageArtifacts.add(coverageArtifact);
         }
 
         Artifact microCoverageArtifact = null;
         if (collectCodeCoverage && config.isMicroCoverageEnabled()) {
           microCoverageArtifact = ruleContext.getPackageRelativeArtifact(
-              targetName.getRelative("coverage" + suffix + ".micro.dat"), root);
+              targetName.getRelative(shardRunDir + "coverage.micro.dat"), root);
         }
 
         env.registerAction(new TestRunnerAction(
             ruleContext.getActionOwner(), inputs, testRuntime,
             testLog, cacheStatus,
             coverageArtifact, microCoverageArtifact,
-            testProperties, extraEnv, executionSettings,
+            testProperties, testEnv, executionSettings,
             shard, run, config, ruleContext.getWorkspaceName()));
         results.add(cacheStatus);
       }
     }
     // TODO(bazel-team): Passing the reportGenerator to every TestParams is a bit strange.
-    Artifact reportGenerator = collectCodeCoverage
-        ? ruleContext.getPrerequisiteArtifact(":coverage_report_generator", Mode.HOST) : null;
+    Artifact reportGenerator = null;
+    if (config.isCodeCoverageEnabled()) {
+      // It's not enough to add this if the rule has coverage enabled because the command line may
+      // contain rules with baseline coverage but no test rules that have coverage enabled, and in
+      // that case, we still need the report generator.
+      reportGenerator = ruleContext.getPrerequisiteArtifact(
+          "$coverage_report_generator", Mode.HOST);
+    }
+
     return new TestParams(runsPerTest, shards, TestTimeout.getTestTimeout(ruleContext.getRule()),
         ruleContext.getRule().getRuleClass(), ImmutableList.copyOf(results),
         coverageArtifacts.build(), reportGenerator);

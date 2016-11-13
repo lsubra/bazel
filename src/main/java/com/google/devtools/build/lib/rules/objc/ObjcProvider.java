@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.rules.objc;
 import static com.google.devtools.build.lib.collect.nestedset.Order.LINK_ORDER;
 import static com.google.devtools.build.lib.collect.nestedset.Order.STABLE_ORDER;
 
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -26,14 +27,16 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.packages.SkylarkClassObject;
+import com.google.devtools.build.lib.packages.SkylarkClassObjectConstructor;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
 import com.google.devtools.build.lib.rules.cpp.LinkerInputs;
 import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
-import com.google.devtools.build.lib.syntax.ClassObject.SkylarkClassObject;
+import com.google.devtools.build.lib.skylarkinterface.SkylarkModuleCategory;
+import com.google.devtools.build.lib.syntax.EvalUtils;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.xcode.xcodegen.proto.XcodeGenProtos.TargetControl;
-
 import java.util.HashMap;
 import java.util.Map;
 
@@ -42,7 +45,11 @@ import java.util.Map;
  * deps that are needed for building Objective-C rules.
  */
 @Immutable
-@SkylarkModule(name = "ObjcProvider", doc = "A provider for compilation and linking of objc.")
+@SkylarkModule(
+  name = "ObjcProvider",
+  category = SkylarkModuleCategory.PROVIDER,
+  doc = "A provider for compilation and linking of objc."
+)
 public final class ObjcProvider extends SkylarkClassObject implements TransitiveInfoProvider {
 
   /**
@@ -99,6 +106,16 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
    */
   public static final Key<Artifact> LINKED_BINARY =
       new Key<>(STABLE_ORDER, "linked_binary", Artifact.class);
+
+  /** Combined-architecture binaries to include in the final bundle. */
+  public static final Key<Artifact> MULTI_ARCH_LINKED_BINARIES =
+      new Key<>(STABLE_ORDER, "combined_arch_linked_binary", Artifact.class);
+  /** Combined-architecture dynamic libraries to include in the final bundle. */
+  public static final Key<Artifact> MULTI_ARCH_DYNAMIC_LIBRARIES =
+      new Key<>(STABLE_ORDER, "combined_arch_dynamic_library", Artifact.class);
+  /** Combined-architecture archives to include in the final bundle. */
+  public static final Key<Artifact> MULTI_ARCH_LINKED_ARCHIVES =
+      new Key<>(STABLE_ORDER, "combined_arch_linked_archive", Artifact.class);
 
   /**
    * Indicates which libraries to load with {@code -force_load}. This is a subset of the union of
@@ -281,13 +298,6 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
       new Key<>(STABLE_ORDER, "exported_debug_artifacts", Artifact.class);
 
   /**
-   * Generated breakpad file containing debug information used by the breakpad crash reporting
-   * system.
-   */
-  public static final Key<Artifact> BREAKPAD_FILE =
-      new Key<>(STABLE_ORDER, "breakpad_file", Artifact.class);
-
-  /**
    * Single-architecture link map for a binary.
    */
   public static final Key<Artifact> LINKMAP_FILE =
@@ -321,8 +331,15 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
   public static final Key<String> LINKOPT = new Key<>(LINK_ORDER, "linkopt", String.class);
 
   /**
-   * Static libraries that are built from J2ObjC-translated Java code.
+   * Link time artifacts from dependencies. These do not fall into any other category such as
+   * libraries or archives, rather provide a way to add arbitrary data (e.g. Swift AST files)
+   * to the linker. The rule that adds these is also responsible to add the necessary linker flags
+   * in {@link #LINKOPT}.
    */
+  public static final Key<Artifact> LINK_INPUTS =
+      new Key<>(LINK_ORDER, "link_inputs", Artifact.class);
+
+  /** Static libraries that are built from J2ObjC-translated Java code. */
   public static final Key<Artifact> J2OBJC_LIBRARY =
       new Key<>(LINK_ORDER, "j2objc_library", Artifact.class);
 
@@ -344,18 +361,23 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
     USES_SWIFT,
 
     /**
-     * Indicates that watch os 1 extension is present in the bundle.
+     * Indicates that a watchOS 1 extension is present in the bundle. (There can only be one
+     * extension for any given watchOS version in a given bundle).
      */
     HAS_WATCH1_EXTENSION,
+
+    /**
+     * Indicates that a watchOS 2 extension is present in the bundle. (There can only be one
+     * extension for any given watchOS version in a given bundle).
+     */
+    HAS_WATCH2_EXTENSION,
   }
 
   private final ImmutableMap<Key<?>, NestedSet<?>> items;
 
   // Items which should not be propagated to dependents.
   private final ImmutableMap<Key<?>, NestedSet<?>> nonPropagatedItems;
-  /**
-   * All keys in ObjcProvider that will be passed in the corresponding Skylark provider.
-   */
+  /** All keys in ObjcProvider that will be passed in the corresponding Skylark provider. */
   static final ImmutableList<Key<?>> KEYS_FOR_SKYLARK =
       ImmutableList.<Key<?>>of(
           LIBRARY,
@@ -368,6 +390,8 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
           DEFINE,
           ASSET_CATALOG,
           SDK_DYLIB,
+          SDK_FRAMEWORK,
+          WEAK_SDK_FRAMEWORK,
           XCDATAMODEL,
           MODULE_MAP,
           MERGE_ZIP,
@@ -375,19 +399,24 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
           DYNAMIC_FRAMEWORK_FILE,
           DEBUG_SYMBOLS,
           DEBUG_SYMBOLS_PLIST,
-          BREAKPAD_FILE,
           STORYBOARD,
           XIB,
           STRINGS,
           LINKOPT,
+          LINK_INPUTS,
           J2OBJC_LIBRARY,
           ROOT_MERGE_ZIP,
           INCLUDE,
           INCLUDE_SYSTEM,
           GENERAL_RESOURCE_DIR,
+          GENERAL_RESOURCE_FILE,
+          BUNDLE_FILE,
           BUNDLE_IMPORT_DIR,
           XCASSETS_DIR,
-          FRAMEWORK_DIR);
+          FRAMEWORK_DIR,
+          MULTI_ARCH_LINKED_BINARIES,
+          MULTI_ARCH_LINKED_ARCHIVES,
+          MULTI_ARCH_DYNAMIC_LIBRARIES);
 
   /**
    * Returns the skylark key for the given string, or null if no such key exists or is available
@@ -405,15 +434,23 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
   // Items which should be passed to strictly direct dependers, but not transitive dependers.
   private final ImmutableMap<Key<?>, NestedSet<?>> strictDependencyItems;
 
+  private static final SkylarkClassObjectConstructor OBJC_PROVIDER =
+      SkylarkClassObjectConstructor.createNative("objc_provider");
+
   private ObjcProvider(
       ImmutableMap<Key<?>, NestedSet<?>> items,
       ImmutableMap<Key<?>, NestedSet<?>> nonPropagatedItems,
       ImmutableMap<Key<?>, NestedSet<?>> strictDependencyItems,
       ImmutableMap<String, Object> skylarkFields) {
-    super(skylarkFields, "ObjcProvider field %s could not be instantiated");
+    super(OBJC_PROVIDER, skylarkFields, "ObjcProvider field %s could not be instantiated");
     this.items = Preconditions.checkNotNull(items);
     this.nonPropagatedItems = Preconditions.checkNotNull(nonPropagatedItems);
     this.strictDependencyItems = Preconditions.checkNotNull(strictDependencyItems);
+  }
+
+  @Override
+  public Concatter getConcatter() {
+    return null;
   }
 
   /**
@@ -448,6 +485,26 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
    */
   public boolean hasAssetCatalogs() {
     return !get(XCASSETS_DIR).isEmpty();
+  }
+
+  /** Returns the list of .a files required for linking that arise from objc libraries. */
+  ImmutableList<Artifact> getObjcLibraries() {
+    // JRE libraries must be ordered after all regular objc libraries.
+    NestedSet<Artifact> jreLibs = get(JRE_LIBRARY);
+    return ImmutableList.<Artifact>builder()
+        .addAll(Iterables.filter(
+            get(LIBRARY), Predicates.not(Predicates.in(jreLibs.toSet()))))
+        .addAll(jreLibs)
+        .build();
+  }
+
+  /** Returns the list of .a files required for linking that arise from cc libraries. */
+  ImmutableList<Artifact> getCcLibraries() {
+    ImmutableList.Builder<Artifact> ccLibraryBuilder = ImmutableList.builder();
+    for (LinkerInputs.LibraryToLink libraryToLink : get(CC_LIBRARY)) {
+      ccLibraryBuilder.add(libraryToLink.getArtifact());
+    }
+    return ccLibraryBuilder.build();
   }
 
   /**
@@ -496,6 +553,21 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
     public Builder addTransitiveAndPropagate(ObjcProvider provider) {
       for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.items.entrySet()) {
         uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.items);
+      }
+      for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.strictDependencyItems.entrySet()) {
+        uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.nonPropagatedItems);
+      }
+      return this;
+    }
+   
+    /**
+     * Add all keys and values from the given provider, but propagate any normally-propagated items
+     * only to direct dependers of this ObjcProvider.
+     */
+    public Builder addAsDirectDeps(ObjcProvider provider) {
+      for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.items.entrySet()) {
+        uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(),
+            this.strictDependencyItems);
       }
       for (Map.Entry<Key<?>, NestedSet<?>> typeEntry : provider.strictDependencyItems.entrySet()) {
         uncheckedAddTransitive(typeEntry.getKey(), typeEntry.getValue(), this.nonPropagatedItems);
@@ -620,22 +692,51 @@ public final class ObjcProvider extends SkylarkClassObject implements Transitive
     }
 
     /**
-     * Adds the given providers from skylark.  An error is thrown if toAdd is not an iterable of
+     * Adds the given providers from skylark. An error is thrown if toAdd is not an iterable of
      * ObjcProvider instances.
      */
     @SuppressWarnings("unchecked")
     void addProvidersFromSkylark(Object toAdd) {
       if (!(toAdd instanceof Iterable)) {
         throw new IllegalArgumentException(
-            String.format(AppleSkylarkCommon.BAD_PROVIDERS_ITER_ERROR, toAdd.getClass()));
+            String.format(
+                AppleSkylarkCommon.BAD_PROVIDERS_ITER_ERROR, EvalUtils.getDataTypeName(toAdd)));
       } else {
         Iterable<Object> toAddIterable = (Iterable<Object>) toAdd;
         for (Object toAddObject : toAddIterable) {
           if (!(toAddObject instanceof ObjcProvider)) {
             throw new IllegalArgumentException(
-                String.format(AppleSkylarkCommon.BAD_PROVIDERS_ELEM_ERROR, toAddObject.getClass()));
+                String.format(
+                    AppleSkylarkCommon.BAD_PROVIDERS_ELEM_ERROR,
+                    EvalUtils.getDataTypeName(toAddObject)));
           } else {
             this.addTransitiveAndPropagate((ObjcProvider) toAddObject);
+          }
+        }
+      }
+    }
+
+    /**
+     * Adds the given providers from skylark, but propagate any normally-propagated items
+     * only to direct dependers. An error is thrown if toAdd is not an iterable of ObjcProvider
+     * instances.
+     */
+    @SuppressWarnings("unchecked")
+    void addDirectDepProvidersFromSkylark(Object toAdd) {
+      if (!(toAdd instanceof Iterable)) {
+        throw new IllegalArgumentException(
+            String.format(
+                AppleSkylarkCommon.BAD_PROVIDERS_ITER_ERROR, EvalUtils.getDataTypeName(toAdd)));
+      } else {
+        Iterable<Object> toAddIterable = (Iterable<Object>) toAdd;
+        for (Object toAddObject : toAddIterable) {
+          if (!(toAddObject instanceof ObjcProvider)) {
+            throw new IllegalArgumentException(
+                String.format(
+                    AppleSkylarkCommon.BAD_PROVIDERS_ELEM_ERROR,
+                    EvalUtils.getDataTypeName(toAddObject)));
+          } else {
+            this.addAsDirectDeps((ObjcProvider) toAddObject);
           }
         }
       }

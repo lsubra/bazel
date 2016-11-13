@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#    http:#www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -198,7 +198,7 @@ def tool_label(label_str):
 def build_c_rule_ide_info(target, ctx):
   """Build CRuleIdeInfo.
 
-  Returns a pair of (CRuleIdeInfo proto, a set of ide-resolve-files).
+  Returns a tuple of (CRuleIdeInfo proto, a set of ide-resolve-files).
   (or (None, empty set) if the rule is not a C rule).
   """
   if not hasattr(target, "cc"):
@@ -228,7 +228,7 @@ def build_c_rule_ide_info(target, ctx):
       transitive_define = cc_provider.defines,
       transitive_system_include_directory = cc_provider.system_include_directories,
   )
-  ide_resolve_files = set()
+  ide_resolve_files = cc_provider.transitive_headers
   return (c_rule_ide_info, ide_resolve_files)
 
 def build_c_toolchain_ide_info(target, ctx):
@@ -269,6 +269,7 @@ def build_java_rule_ide_info(target, ctx):
   if not hasattr(target, "java") or ctx.rule.kind == "proto_library":
     return (None, set(), set())
 
+  ide_info_files = set()
   sources = sources_from_rule(ctx)
 
   jars = [library_artifact(output) for output in target.java.outputs.jars]
@@ -286,8 +287,28 @@ def build_java_rule_ide_info(target, ctx):
 
   jdeps = artifact_location(target.java.outputs.jdeps)
 
-  package_manifest = build_java_package_manifest(target, ctx)
-  ide_info_files = set([package_manifest]) if package_manifest else set()
+  java_sources, gen_java_sources, srcjars = divide_java_sources(ctx)
+
+  # HACK -- android_library rules with the resources attribute do not support srcjar inputs
+  # to the filtered gen jar generation, because we don't want all resource classes in this jar.
+  # This can be removed once android_resources is deleted
+  if hasattr(ctx.rule.attr, LEGACY_RESOURCE_ATTR) and ctx.rule.kind.startswith("android_"):
+    srcjars = []
+
+  package_manifest = None
+  if java_sources:
+    package_manifest = build_java_package_manifest(ctx, target, java_sources, ".manifest")
+    ide_info_files = ide_info_files | set([package_manifest])
+
+  filtered_gen_jar = None
+  if java_sources and (gen_java_sources or srcjars):
+    filtered_gen_jar, filtered_gen_resolve_files = build_filtered_gen_jar(
+        ctx,
+        target,
+        gen_java_sources,
+        srcjars
+    )
+    ide_resolve_files = ide_resolve_files | filtered_gen_resolve_files
 
   java_rule_ide_info = struct_omit_none(
       sources = sources,
@@ -295,40 +316,93 @@ def build_java_rule_ide_info(target, ctx):
       jdeps = jdeps,
       generated_jars = gen_jars,
       package_manifest = artifact_location(package_manifest),
+      filtered_gen_jar = filtered_gen_jar,
   )
   return (java_rule_ide_info, ide_info_files, ide_resolve_files)
 
-def build_java_package_manifest(target, ctx):
-  """Builds a java package manifest and returns the output file."""
-  source_files = java_sources_for_package_manifest(ctx)
-  if not source_files:
-    return None
-
-  output = ctx.new_file(target.label.name + ".manifest")
+def build_java_package_manifest(ctx, target, source_files, suffix):
+  """Builds the java package manifest for the given source files."""
+  output = ctx.new_file(target.label.name + suffix)
 
   args = []
   args += ["--output_manifest", output.path]
   args += ["--sources"]
-  args += [":".join([f.root.path + "," + f.path for f in source_files])]
+  args += [":".join([f.root.path + "," + f.short_path for f in source_files])]
+  argfile = ctx.new_file(ctx.configuration.bin_dir,
+                         target.label.name + suffix + ".params")
+  ctx.file_action(output=argfile, content="\n".join(args))
+
   ctx.action(
-      inputs = source_files,
+      inputs = source_files + [argfile],
       outputs = [output],
       executable = ctx.executable._package_parser,
-      arguments = args,
+      arguments = ["@" + argfile.path],
       mnemonic = "JavaPackageManifest",
       progress_message = "Parsing java package strings for " + str(target.label),
   )
   return output
 
-def java_sources_for_package_manifest(ctx):
-  """Get the list of non-generated java sources to go in the package manifest."""
+def build_filtered_gen_jar(ctx, target, gen_java_sources, srcjars):
+  """Filters the passed jar to contain only classes from the given manifest."""
+  jar_artifacts = []
+  source_jar_artifacts = []
+  for jar in target.java.outputs.jars:
+    if jar.ijar:
+      jar_artifacts.append(jar.ijar)
+    elif jar.class_jar:
+      jar_artifacts.append(jar.class_jar)
+    if jar.source_jar:
+      source_jar_artifacts.append(jar.source_jar)
 
+  filtered_jar = ctx.new_file(target.label.name + "-filtered-gen.jar")
+  filtered_source_jar = ctx.new_file(target.label.name + "-filtered-gen-src.jar")
+  args = []
+  args += ["--filter_jars"]
+  args += [":".join([jar.path for jar in jar_artifacts])]
+  args += ["--filter_source_jars"]
+  args += [":".join([jar.path for jar in source_jar_artifacts])]
+  args += ["--filtered_jar", filtered_jar.path]
+  args += ["--filtered_source_jar", filtered_source_jar.path]
+  if gen_java_sources:
+    args += ["--keep_java_files"]
+    args += [":".join([java_file.path for java_file in gen_java_sources])]
+  if srcjars:
+    args += ["--keep_source_jars"]
+    args += [":".join([source_jar.path for source_jar in srcjars])]
+  ctx.action(
+      inputs = jar_artifacts + source_jar_artifacts + gen_java_sources + srcjars,
+      outputs = [filtered_jar, filtered_source_jar],
+      executable = ctx.executable._jar_filter,
+      arguments = args,
+      mnemonic = "JarFilter",
+      progress_message = "Filtering generated code for " + str(target.label),
+  )
+  output_jar = struct(
+      jar=artifact_location(filtered_jar),
+      source_jar=artifact_location(filtered_source_jar),
+  )
+  ide_resolve_files = set([filtered_jar, filtered_source_jar])
+  return output_jar, ide_resolve_files
+
+def divide_java_sources(ctx):
+  """Divide sources into plain java, generated java, and srcjars."""
+
+  java_sources = []
+  gen_java_sources = []
+  srcjars = []
   if hasattr(ctx.rule.attr, "srcs"):
-    return [f
-            for src in ctx.rule.attr.srcs
-            for f in src.files
-            if f.is_source and f.basename.endswith(".java")]
-  return []
+    srcs = ctx.rule.attr.srcs
+    for src in srcs:
+      for f in src.files:
+        if f.basename.endswith(".java"):
+          if f.is_source:
+            java_sources.append(f)
+          else:
+            gen_java_sources.append(f)
+        elif f.basename.endswith(".srcjar"):
+          srcjars.append(f)
+
+  return java_sources, gen_java_sources, srcjars
 
 def build_android_rule_ide_info(target, ctx, legacy_resource_label):
   """Build AndroidRuleIdeInfo.
@@ -339,19 +413,21 @@ def build_android_rule_ide_info(target, ctx, legacy_resource_label):
   if not hasattr(target, "android"):
     return (None, set())
 
+  android = target.android
   android_rule_ide_info = struct_omit_none(
-      java_package = target.android.java_package,
-      manifest = artifact_location(target.android.manifest),
-      apk = artifact_location(target.android.apk),
-      dependency_apk = [artifact_location(apk) for apk in target.android.apks_under_test],
-      has_idl_sources = target.android.idl.output != None,
-      idl_jar = library_artifact(target.android.idl.output),
-      generate_resource_class = target.android.defines_resources,
-      resources = all_unique_source_directories(target.android.resources),
-      resource_jar = library_artifact(target.android.resource_jar),
+      java_package = android.java_package,
+      idl_import_root = android.idl.import_root if hasattr(android.idl, "import_root") else None,
+      manifest = artifact_location(android.manifest),
+      apk = artifact_location(android.apk),
+      dependency_apk = [artifact_location(apk) for apk in android.apks_under_test],
+      has_idl_sources = android.idl.output != None,
+      idl_jar = library_artifact(android.idl.output),
+      generate_resource_class = android.defines_resources,
+      resources = all_unique_source_directories(android.resources),
+      resource_jar = library_artifact(android.resource_jar),
       legacy_resources = legacy_resource_label,
   )
-  ide_resolve_files = set(jars_from_output(target.android.idl.output))
+  ide_resolve_files = set(jars_from_output(android.idl.output))
   return (android_rule_ide_info, ide_resolve_files)
 
 def build_test_info(target, ctx):
@@ -359,8 +435,8 @@ def build_test_info(target, ctx):
   if not is_test_rule(ctx):
     return None
   return struct_omit_none(
-           size = ctx.rule.attr.size,
-         )
+      size = ctx.rule.attr.size,
+  )
 
 def is_test_rule(ctx):
   kind_string = ctx.rule.kind
@@ -391,7 +467,7 @@ def build_java_toolchain_ide_info(target):
 
 ##### Main aspect function
 
-def _aspect_impl(target, ctx):
+def _aspect_impl_helper(target, ctx, for_test):
   """Aspect implementation function."""
   rule_attrs = ctx.rule.attr
 
@@ -408,7 +484,7 @@ def _aspect_impl(target, ctx):
     export_deps = set([str(l) for l in target.java.transitive_exports])
     # Empty android libraries export all their dependencies.
     if ctx.rule.kind == "android_library":
-      if not hasattr(rule_attrs, "src") or not ctx.rule.attr.src:
+      if not hasattr(rule_attrs, "srcs") or not ctx.rule.attr.srcs:
         export_deps = export_deps | compiletime_deps
 
   # runtime_deps
@@ -423,9 +499,13 @@ def _aspect_impl(target, ctx):
   prerequisites = direct_dep_targets + runtime_dep_targets + list_omit_none(legacy_resource_target)
   ide_info_text = set()
   ide_resolve_files = set()
+  ide_compile_files = target.output_group("files_to_compile_INTERNAL_")
+  intellij_infos = dict()
   for dep in prerequisites:
     ide_info_text = ide_info_text | dep.intellij_info_files.ide_info_text
     ide_resolve_files = ide_resolve_files | dep.intellij_info_files.ide_resolve_files
+    if for_test:
+      intellij_infos.update(dep.intellij_infos)
 
   # Collect C-specific information
   (c_rule_ide_info, c_ide_resolve_files) = build_c_rule_ide_info(target, ctx)
@@ -475,31 +555,52 @@ def _aspect_impl(target, ctx):
   output = ctx.new_file(target.label.name + ".intellij-build.txt")
   ctx.file_action(output, info.to_proto())
   ide_info_text = ide_info_text | set([output])
+  if for_test:
+    intellij_infos[str(target.label)] = info
+  else:
+    intellij_infos = None
 
   # Return providers.
-  return struct(
+  return struct_omit_none(
       intellij_aspect = True,
       output_groups = {
-        "ide-info-text" : ide_info_text,
-        "ide-resolve" : ide_resolve_files,
+          "ide-info-text" : ide_info_text,
+          "ide-resolve" : ide_resolve_files,
+          "ide-compile": ide_compile_files,
       },
       intellij_info_files = struct(
         ide_info_text = ide_info_text,
         ide_resolve_files = ide_resolve_files,
       ),
+      intellij_infos = intellij_infos,
       export_deps = export_deps,
     )
 
-intellij_info_aspect = aspect(
-    attrs = {
-        "_package_parser": attr.label(
-            default = tool_label("//tools/android:PackageParser"),
-            cfg = HOST_CFG,
-            executable = True,
-            allow_files = True,
-        ),
-    },
-    attr_aspects = ALL_DEPS.label + ALL_DEPS.label_list + [LEGACY_RESOURCE_ATTR],
-    fragments = ["cpp"],
-    implementation = _aspect_impl,
-)
+def _aspect_impl(target, ctx):
+  return _aspect_impl_helper(target, ctx, for_test=False)
+
+def _test_aspect_impl(target, ctx):
+  return _aspect_impl_helper(target, ctx, for_test=True)
+
+def _aspect_def(impl):
+  return aspect(
+      attrs = {
+          "_package_parser": attr.label(
+              default = tool_label("//tools/android:PackageParser"),
+              cfg = "host",
+              executable = True,
+              allow_files = True),
+          "_jar_filter": attr.label(
+              default = tool_label("//tools/android:JarFilter"),
+              cfg = "host",
+              executable = True,
+              allow_files = True),
+      },
+      attr_aspects = ALL_DEPS.label + ALL_DEPS.label_list + [LEGACY_RESOURCE_ATTR],
+      fragments = ["cpp"],
+      implementation = impl,
+  )
+
+
+intellij_info_aspect = _aspect_def(_aspect_impl)
+intellij_info_test_aspect = _aspect_def(_test_aspect_impl)

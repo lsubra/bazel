@@ -23,7 +23,7 @@ import com.google.devtools.build.lib.util.Preconditions;
 import javax.annotation.Nullable;
 
 /**
- * Encapsulates the process of building the AndroidResourceContainer.
+ * Encapsulates the process of building {@link ResourceContainer}.
  */
 public final class AndroidResourceContainerBuilder {
   private LocalResourceContainer data;
@@ -31,6 +31,7 @@ public final class AndroidResourceContainerBuilder {
   private Artifact rOutput;
   private boolean inlineConstants = false;
   private Artifact symbolsFile;
+  private boolean useJavaPackageFromManifest = false;
 
   /** Provides the resources and assets for the ResourceContainer. */
   public AndroidResourceContainerBuilder withData(LocalResourceContainer data) {
@@ -53,7 +54,13 @@ public final class AndroidResourceContainerBuilder {
     return this;
   }
 
-  /** Creates a {@link ResourceContainer} from a {@link RuleContext}. 
+  public AndroidResourceContainerBuilder useJavaPackageFromManifest(
+      boolean useJavaPackageFromManifest) {
+    this.useJavaPackageFromManifest = useJavaPackageFromManifest;
+    return this;
+  }
+
+  /** Creates a {@link ResourceContainer} from a {@link RuleContext}.
    * @throws InterruptedException */
   public ResourceContainer buildFromRule(RuleContext ruleContext, @Nullable Artifact apk)
       throws InterruptedException {
@@ -61,7 +68,7 @@ public final class AndroidResourceContainerBuilder {
     Preconditions.checkNotNull(this.data);
     Artifact rJavaSrcJar = ruleContext.getImplicitOutputArtifact(
         AndroidRuleClasses.ANDROID_JAVA_SOURCE_JAR);
-    return new AndroidResourcesProvider.ResourceContainer(
+    return AndroidResourcesProvider.ResourceContainer.create(
             ruleContext.getLabel(),
             getJavaPackage(ruleContext, rJavaSrcJar),
             getRenameManifestPackage(ruleContext),
@@ -69,16 +76,20 @@ public final class AndroidResourceContainerBuilder {
             apk,
             manifest,
             rJavaSrcJar,
+            null, /* javaClassJar -- compile from source jar unless generated directly by a tool */
             data.getAssets(),
             data.getResources(),
             data.getAssetRoots(),
             data.getResourceRoots(),
-            ruleContext.attributes().get("exports_manifest", Type.BOOLEAN),
+            getExportsManifest(ruleContext),
             rOutput,
             symbolsFile);
   }
 
   private String getJavaPackage(RuleContext ruleContext, Artifact rJavaSrcJar) {
+    if (useJavaPackageFromManifest) {
+      return null;
+    }
     if (hasCustomPackage(ruleContext)) {
       return ruleContext.attributes().get("custom_package", Type.STRING);
     }
@@ -94,6 +105,13 @@ public final class AndroidResourceContainerBuilder {
 
   private boolean hasCustomPackage(RuleContext ruleContext) {
     return ruleContext.attributes().isAttributeValueExplicitlySpecified("custom_package");
+  }
+
+  private boolean getExportsManifest(RuleContext ruleContext) {
+    // AndroidLibraryBaseRule has exports_manifest but AndroidBinaryBaseRule does not.
+    // ResourceContainers are built for both, so we must check if exports_manifest is present.
+    return ruleContext.attributes().has("exports_manifest", Type.BOOLEAN)
+        && ruleContext.attributes().get("exports_manifest", Type.BOOLEAN);
   }
 
   @Nullable

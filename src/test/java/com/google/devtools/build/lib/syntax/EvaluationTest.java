@@ -575,6 +575,40 @@ public class EvaluationTest extends EvaluationTestCase {
   }
 
   @Test
+  public void testListComprehensionUpdate() throws Exception {
+    new BuildTest()
+        .setUp("xs = [1, 2, 3]")
+        .testIfErrorContains("trying to mutate a locked object",
+            "[xs.append(4) for x in xs]");
+  }
+
+  @Test
+  public void testNestedListComprehensionUpdate() throws Exception {
+    new BuildTest()
+        .setUp("xs = [1, 2, 3]")
+        .testIfErrorContains("trying to mutate a locked object",
+            "[xs.append(4) for x in xs for y in xs]");
+  }
+
+  @Test
+  public void testListComprehensionUpdateInClause() throws Exception {
+    new BuildTest()
+        .setUp("xs = [1, 2, 3]")
+        .testIfErrorContains("trying to mutate a locked object",
+            // Use short-circuiting to produce valid output in the event
+            // the exception is not raised.
+            "[y for x in xs for y in (xs.append(4) or xs)]");
+  }
+
+  @Test
+  public void testDictComprehensionUpdate() throws Exception {
+    new BuildTest()
+        .setUp("xs = {1:1, 2:2, 3:3}")
+        .testIfErrorContains("trying to mutate a locked object",
+            "[xs.popitem() for x in xs]");
+  }
+
+  @Test
   public void testInOperator() throws Exception {
     newTest()
         .testStatement("'b' in ['a', 'b']", Boolean.TRUE)

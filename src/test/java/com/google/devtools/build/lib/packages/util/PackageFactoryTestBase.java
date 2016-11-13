@@ -42,9 +42,6 @@ import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
-
-import org.junit.Before;
-
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Collection;
@@ -53,6 +50,7 @@ import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
+import org.junit.Before;
 
 /**
  * Base class for PackageFactory tests.
@@ -113,8 +111,9 @@ public abstract class PackageFactoryTestBase {
             pkg.getPackageIdentifier(),
             PackageFactoryApparatus.createEmptyLocator(),
             null,
-            TestUtils.getPool());
-    assertThat(globCache.glob(include, exclude, false)).containsExactlyElementsIn(expected);
+            TestUtils.getPool(),
+            -1);
+    assertThat(globCache.globUnsorted(include, exclude, false)).containsExactlyElementsIn(expected);
   }
 
   @Before
@@ -235,7 +234,9 @@ public abstract class PackageFactoryTestBase {
     Path file =
         scratch.file(
             "/globs/BUILD",
-            Printer.format("result = glob(%r, %r, %r)", includes, excludes, excludeDirs ? 1 : 0),
+            Printer.format(
+                "result = glob(%r, exclude=%r, exclude_directories=%r)",
+                includes, excludes, excludeDirs ? 1 : 0),
             resultAssertion);
 
     return packages.evalAndReturnGlobCache("globs", file, packages.ast(file));

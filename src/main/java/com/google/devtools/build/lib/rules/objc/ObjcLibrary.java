@@ -22,8 +22,8 @@ import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
+import com.google.devtools.build.lib.rules.cpp.ArtifactCategory;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParams;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsProvider;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsStore;
@@ -32,6 +32,7 @@ import com.google.devtools.build.lib.rules.cpp.LinkerInputs.LibraryToLink;
 import com.google.devtools.build.lib.rules.objc.ObjcCommon.ResourceAttributes;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesProvider;
 import com.google.devtools.build.lib.syntax.Type;
+import com.google.devtools.build.lib.vfs.FileSystemUtils;
 
 /**
  * Implementation for {@code objc_library}.
@@ -43,7 +44,7 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
    */
   private static class ObjcLibraryCcLinkParamsStore extends CcLinkParamsStore {
 
-    private ObjcCommon common;
+    private final ObjcCommon common;
 
     public ObjcLibraryCcLinkParamsStore(ObjcCommon common) {
       this.common = common;
@@ -56,7 +57,9 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
 
       ImmutableSet.Builder<LibraryToLink> libraries = new ImmutableSet.Builder<>();
       for (Artifact library : objcProvider.get(ObjcProvider.LIBRARY)) {
-        libraries.add(LinkerInputs.opaqueLibraryToLink(library));
+        libraries.add(LinkerInputs.opaqueLibraryToLink(
+            library, ArtifactCategory.STATIC_LIBRARY,
+            FileSystemUtils.removeExtension(library.getRootRelativePathString())));
       }
 
       libraries.addAll(objcProvider.get(ObjcProvider.CC_LIBRARY));
@@ -76,6 +79,7 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
         .addDefines(ruleContext.getTokenizedStringListAttr("defines"))
         .setCompilationArtifacts(CompilationSupport.compilationArtifacts(ruleContext))
         .addDeps(ruleContext.getPrerequisites("deps", Mode.TARGET))
+        .addRuntimeDeps(ruleContext.getPrerequisites("runtime_deps", Mode.TARGET))
         .addDepObjcProviders(
             ruleContext.getPrerequisites("bundles", Mode.TARGET, ObjcProvider.class))
         .addNonPropagatedDepObjcProviders(
@@ -89,6 +93,11 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
       throws InterruptedException, RuleErrorException {
+    // Support treating objc_library as experimental_objc_library
+    if (ruleContext.getFragment(ObjcConfiguration.class).useExperimentalObjcLibrary()) {
+      return ExperimentalObjcLibrary.configureExperimentalObjcLibrary(ruleContext);
+    }
+    
     ObjcCommon common = common(ruleContext);
 
     XcodeProvider.Builder xcodeProviderBuilder = new XcodeProvider.Builder();
@@ -98,7 +107,8 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
     CompilationSupport compilationSupport =
         new CompilationSupport(ruleContext)
             .registerCompileAndArchiveActions(common)
-            .registerFullyLinkAction(common.getObjcProvider())
+            .registerFullyLinkAction(common.getObjcProvider(),
+                ruleContext.getImplicitOutputArtifact(CompilationSupport.FULLY_LINKED_LIB))
             .addXcodeSettings(xcodeProviderBuilder, common)
             .validateAttributes();
 

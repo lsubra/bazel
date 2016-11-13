@@ -17,6 +17,7 @@ import static org.junit.Assert.fail;
 
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Root;
@@ -29,6 +30,7 @@ import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.flags.InvocationPolicyEnforcer;
 import com.google.devtools.build.lib.packages.PackageFactory;
 import com.google.devtools.build.lib.packages.Preprocessor;
@@ -36,12 +38,11 @@ import com.google.devtools.build.lib.packages.util.MockToolsConfig;
 import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.skyframe.DiffAwareness;
+import com.google.devtools.build.lib.skyframe.PackageLookupFunction.CrossRepositoryLabelViolationStrategy;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.SkyValueDirtinessChecker;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
-import com.google.devtools.build.lib.testutil.TestConstants;
-import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.build.lib.util.BlazeClock;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.Path;
@@ -51,17 +52,14 @@ import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
-
-import org.junit.Before;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-
-import java.lang.reflect.Field;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.Before;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Testing framework for tests which check ConfigurationFactory.
@@ -79,31 +77,35 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
     public List<String> multiCpus;
   }
 
+  protected MockToolsConfig mockToolsConfig;
+  protected Path workspace;
+  protected AnalysisMock analysisMock;
   protected SequencedSkyframeExecutor skyframeExecutor;
   protected ConfigurationFactory configurationFactory;
-  protected Path workspace;
   protected ImmutableList<Class<? extends FragmentOptions>> buildOptionClasses;
 
   @Before
   public final void initializeSkyframeExecutor() throws Exception {
     workspace = rootDirectory;
-    ConfiguredRuleClassProvider ruleClassProvider = TestRuleClassProvider.getRuleClassProvider();
+    analysisMock = getAnalysisMock();
+    ConfiguredRuleClassProvider ruleClassProvider = analysisMock.createRuleClassProvider();
     PathPackageLocator pkgLocator =
         new PathPackageLocator(outputBase, ImmutableList.of(rootDirectory));
     final PackageFactory pkgFactory;
-    BlazeDirectories directories = new BlazeDirectories(outputBase, outputBase, rootDirectory,
-        TestConstants.PRODUCT_NAME);
-    pkgFactory = TestConstants.PACKAGE_FACTORY_FACTORY_FOR_TESTING.create(
-        ruleClassProvider, scratch.getFileSystem());
+    BlazeDirectories directories =
+        new BlazeDirectories(outputBase, outputBase, rootDirectory, analysisMock.getProductName());
+    pkgFactory =
+        analysisMock
+            .getPackageFactoryForTesting()
+            .create(ruleClassProvider, scratch.getFileSystem());
     AnalysisTestUtil.DummyWorkspaceStatusActionFactory workspaceStatusActionFactory =
         new AnalysisTestUtil.DummyWorkspaceStatusActionFactory(directories);
-    AnalysisMock analysisMock = getAnalysisMock();
 
     skyframeExecutor =
         SequencedSkyframeExecutor.create(
             pkgFactory,
             directories,
-            BinTools.forUnitTesting(directories, TestConstants.EMBEDDED_TOOLS),
+            BinTools.forUnitTesting(directories, analysisMock.getEmbeddedTools()),
             workspaceStatusActionFactory,
             ruleClassProvider.getBuildInfoFactories(),
             ImmutableList.<DiffAwareness.Factory>of(),
@@ -112,31 +114,30 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
             analysisMock.getSkyFunctions(),
             ImmutableList.<PrecomputedValue.Injected>of(),
             ImmutableList.<SkyValueDirtinessChecker>of(),
-            TestConstants.PRODUCT_NAME);
+            analysisMock.getProductName(),
+            CrossRepositoryLabelViolationStrategy.ERROR);
 
+    PackageCacheOptions packageCacheOptions = Options.getDefaults(PackageCacheOptions.class);
+    packageCacheOptions.showLoadingProgress = true;
+    packageCacheOptions.globbingThreads = 7;
     skyframeExecutor.preparePackageLoading(
         pkgLocator,
-        Options.getDefaults(PackageCacheOptions.class).defaultVisibility,
-        true,
-        7,
-        ruleClassProvider.getDefaultsPackageContent(TestConstants.TEST_INVOCATION_POLICY),
+        packageCacheOptions,
+        ruleClassProvider.getDefaultsPackageContent(
+            analysisMock.getInvocationPolicyEnforcer().getInvocationPolicy()),
         UUID.randomUUID(),
+        ImmutableMap.<String, String>of(),
         new TimestampGranularityMonitor(BlazeClock.instance()));
 
-    analysisMock.setupMockClient(new MockToolsConfig(rootDirectory));
+    mockToolsConfig = new MockToolsConfig(rootDirectory);
+    analysisMock.setupMockClient(mockToolsConfig);
     analysisMock.setupMockWorkspaceFiles(directories.getEmbeddedBinariesRoot());
     configurationFactory = analysisMock.createConfigurationFactory();
-    buildOptionClasses = TestRuleClassProvider.getRuleClassProvider().getOptionFragments();
+    buildOptionClasses = ruleClassProvider.getConfigurationOptions();
   }
 
   protected AnalysisMock getAnalysisMock() {
-    try {
-      Class<?> providerClass = Class.forName(TestConstants.TEST_ANALYSIS_MOCK);
-      Field instanceField = providerClass.getField("INSTANCE");
-      return (AnalysisMock) instanceField.get(null);
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
-    }
+    return AnalysisMock.get();
   }
 
   protected void checkError(String expectedMessage, String... options) throws Exception {
@@ -157,8 +158,7 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
         .build());
     parser.parse(args);
 
-    InvocationPolicyEnforcer optionsPolicyEnforcer =
-        new InvocationPolicyEnforcer(TestConstants.TEST_INVOCATION_POLICY);
+    InvocationPolicyEnforcer optionsPolicyEnforcer = analysisMock.getInvocationPolicyEnforcer();
     optionsPolicyEnforcer.enforce(parser);
 
     ImmutableSortedSet<String> multiCpu = ImmutableSortedSet.copyOf(
@@ -185,12 +185,14 @@ public abstract class ConfigurationTestCase extends FoundationTestCase {
     Map<Root, BuildConfiguration> outputPaths = new HashMap<>();
     for (BuildConfiguration config : allConfigs) {
       if (config.isActionsEnabled()) {
-        BuildConfiguration otherConfig = outputPaths.get(config.getOutputDirectory());
+        BuildConfiguration otherConfig = outputPaths.get(
+            config.getOutputDirectory(RepositoryName.MAIN));
         if (otherConfig != null) {
-          throw new IllegalStateException("The output path '" + config.getOutputDirectory()
+          throw new IllegalStateException("The output path '"
+              + config.getOutputDirectory(RepositoryName.MAIN)
               + "' is the same for configurations '" + config + "' and '" + otherConfig + "'");
         } else {
-          outputPaths.put(config.getOutputDirectory(), config);
+          outputPaths.put(config.getOutputDirectory(RepositoryName.MAIN), config);
         }
       }
     }

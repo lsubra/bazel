@@ -1,3 +1,254 @@
+## Release 0.4.0 (2016-10-26)
+
+```
+Baseline: 088bbc6
+
+Cherry picks:
+   + b01160c: Stamp Windows release.
+   + 2d6736e: Add --no-tty for gpg signing
+   + 9b1dfb8: Remove .sig file before gpg signing
+   + 81aede1: Reimplement whole archive on Windows
+```
+
+Incompatible changes:
+
+  - Skylark: updating list/dicts while they are being looped over is not
+    allowed. Use an explicit copy if needed ("for x in list(mylist):").
+  - Bazel now uses the --cpu flag to look up Jvms; it falls back
+    to "default" if it can't find a Jvm matching the CPU value.
+  - --command_port=-1 to use AF_UNIX for client/server communications
+    is not supported anymore.
+  - Sandboxed actions can access the network by default, unless their
+    target has a "block-network" tag.
+
+New features:
+
+  - Files now have an "extension" property in Skylark.
+
+Important changes:
+
+  - Added a new flag --sandbox_tmpfs_path, which asks the sandbox to
+    mount an empty, writable directory at a specified path when
+    running actions. (Supported on Linux only for now.)
+  - Update protoc-3.0.0-mingw.exe to a working (statically linked)
+    binary
+  - apple_static_library rule to create multi-architecture static
+    archive files from Objc/C++/Swift dependencies on apple platforms
+  - JS: Add support for localization with closure managed rules.
+  - Create a flag --android_dynamic_mode to turn off dynamic mode
+    during the Android split transition.
+  - Darwin sandboxing is default.
+  - Remove flag --experimental_zip_tree_artifact from j2objc Java
+    annotation processing support.
+  - A few functions are added to BUILD files for consistency (hash,
+    dir,
+      hasattr, getattr) with .bzl files, although they are not very
+    useful.
+  - --watchfs is now a command option; the startup option of the same
+        name is deprecated. I.e., use bazel build --watchfs, not
+    blaze --watchfs
+        build.
+
+## Release 0.3.2 (2016-10-07)
+
+```
+Baseline: 023a7bd
+
+Cherry picks:
+   + bebbbe5: Fix dependency on libtool's helper script
+              make_hashed_objlist.py.
+   + 8a0d45f: Add the version information to the bazel.exe file
+   + 2bc0939: Allow new_ rules to overwrited BUILD files in
+              downloaded repos
+   + c5545fd: Rollback of commit
+              96d46280bc5a4803ba2242a4ad16939f85a3b212.
+   + eb87208: Make cc_configure on Windows more robust
+   + c30432c: Fix cc_configure on Windows
+   + 95b16a8: sandbox: Replace the error-prone lazy cleanup of
+              sandbox directories by a simple synchronous cleanup.
+   + e898023: Fix #1849: Sandboxing on OS X should be turned off by
+              default for 0.3.2.
+   + ffdc05d: Add action_config and feature for linking on Windows
+```
+
+Incompatible changes:
+
+  - If you maintain a rule that uses persistent workers, you'll have
+    to specify execution_requirements={"supports-workers": 1} in the
+    ctx.action that intends to run a tool with workers. The
+    WorkerSpawnStrategy will alert you with a warning message if you
+    forget to make this change and fallback to non-worker based
+    execution.
+  - It is now an error to include a precompiled library (.a, .lo, .so)
+    in a cc_library which would generate a library with the same name
+    (e.g., libfoo.so in cc_library foo) if that library also contains
+    other linkable
+    sources.
+  - The main repository's execution root is under the main
+    repository's workspace name, not the source directory's basename.
+    This shouldn't
+    have any effect on most builds, but it's possible it could break
+    someone doing
+    weird things with paths in actions.
+  - Blaze doesn't support Unix domain sockets for communication
+    between its client and server anymore. Therefore, the
+    --command_port command line argument doesn't accept -1 as a valid
+    value anymore.
+  - Skylark: It is an error to shadow a global variable with a local
+    variable after the global has already been accessed in the
+    function.
+  - bin_dir and genfiles_dir are now properties of ctx, not
+    configuration. That is, to access the bin or genfiles directory
+    from a
+    Skylark rule, use ctx.bin_dir or ctx.genfiles_dir (not
+    ctx.configuration.{bin,genfiles}_dir).  At the moment, you can
+    access
+    {bin,genfiles}_dir from either, but the ctx.configuration version
+    will
+    stop working in a future release.
+  - filegroup-based C++ toolchains are not supported anymore.
+    --*_crosstool_top options must always point to a
+    cc_toolchain_suite rule (or an alias of one).
+  - repository_ctx.{download,download_and_extract,execute} API now use
+                   named parameters for optional parameters and no
+    longer uses argument
+                   type to distinguished between arguments
+    (executable attribute name
+                   must be specified when preceding optional
+    arguments are missing).
+
+New features:
+
+  - print and fail are now available in BUILD files.
+
+Important changes:
+
+  - Added @bazel_tools//tools/build_defs/repo/git.bzl as a Skylark
+    rule for Git repositories.
+  - Added @bazel_tools//tools/build_defs/repo/maven_rules.bzl as a
+    Skylark rule for Maven repositories.
+  - Add global hash() function for strings (only)
+  - Improve Android split transition handling.
+  - Removes exports_manifest attribute from android_binary rule.
+  - java_proto_library: control strict-deps through a rule-level and
+    a package-level attribute.
+  - Persistent workers are now used by default for Java compilation
+    in Bazel, which should speed up your Java builds by ~4x. You can
+    switch back to the old behavior via --strategy=Javac=standalone.
+    Check out http://www.bazel.io/blog/2015/12/10/java-workers.html
+    for more details.
+  - objc_* rules can now depend on any target that returns an "objc"
+    provider.
+  - Adds support for NDK12 to `android_ndk_repository` rule in Bazel.
+  - Test targets can disable the JUnit4 test security manager via a
+    property.
+  - Disable the Android split transition if --android_cpu and
+    fat_apk_cpu are both empty.
+  - New sandboxing implementation for Linux in which all actions run
+    in a separate execroot that contains input files as symlinks back
+    to the originals in the workspace. The running action now has
+    read-write access to its execroot and /tmp only and can no longer
+    write in arbitrary other places in the file system.
+  - Add worker support to single jar.
+  - Invoke source jar action as a worker.
+  - Sandboxed builds allow network access for builds by default.
+    Tests will still be run without networking, unless
+    "requires-network" is specified as a tag.
+  - Add path.realpath() method for Skylark repositories.
+  - On Mac devices, detect locally installed versions of xcode to:
+     1. Use a sensible default if xcode is required but
+    --xcode_version is unspecified.
+     2. Use sensible default iOS SDK version for the targeted version
+    of xcode if ios_sdk_version is unspecified.
+  - Emacs' [C-x `], a.k.a. next-error, works again in emacsen >= 25.1
+  - swift_library can be used to build watchOS apps.
+  - Exposes the is_device field on Apple platform objects and adds
+    the apple_common.platform_type(name) method to retrieve a
+    platform_type value that can be passed to methods like the Apple
+    fragment's multi_arch_platform.
+  - Move Skylark git_repository rules to git.bzl
+  - Add support for aspects to attr.label() attributes
+  - Global varaiables HOST_CFG and DATA_CFG are deprecated in favor
+    of strings "host"
+    and "data.
+    Argument `cfg = "host"` or `cfg = "data"` is mandatory if
+    `executable = True` is provided for a label.
+  - The deprecation attribute of all rules now causes warnings
+    to be printed when other targets depend on a target with that
+    attribute set.
+  - Change default of --[no]instrument_test_targets to false, change
+    default --instrumentation_filter (which previously tried to
+    exclude test targets by heuristic) to only exclude targets in
+    javatests.
+  - Remove deprecated absolute paths in blaze IDE artifacts
+  - When using android_binary.manifest_merger="android" the merger
+    produces a summary log next to the merged manifest artifact.
+  - Allow different default mallocs per configuration.
+
+## Release 0.3.1 (2016-07-29)
+
+```
+Baseline: 792a9d6
+
+Cherry picks:
+   + 25e5995: Rollback of commit
+              a2770334ea3f3111026eb3e1368586921468710c.
+   + 2479405: Fix NPE with unset maven_jar sha1
+   + 3cf2126: Rewrite the extra action info files if the data within
+              them changes.
+   + 5a9c6b4: JavaBuilder: Reintroduce the -extra_checks flag.
+```
+
+Incompatible changes:
+
+  - Removed predefined Python variable "generic_cpu".
+  - Skylark rules: if you set "outputs" or an attribute to a
+    function, this function must now list its required attributes as
+    parameters (instead of an attribute map).
+  - The host_platform and target_platform entries are not written to
+    the master log anymore.
+  - Bazel requires Hazelcast 3.6 or higher now for remote execution
+    support, because we upgraded our client library and the protocol
+    it uses is incompatible with older versions.
+
+New features:
+
+  - LIPO context (--lipo_context) can now also be a cc_test (in
+    addition to cc_binary)
+
+Important changes:
+
+  - If --android_crosstool_top is set, native code compiled for
+    android will always use --android_compiler and not --compiler in
+    choosing the crosstool toolchain, and will use --android_cpu if
+    --fat_apk_cpu is not set.
+  - Add --instrument_test_targets option.
+  - apple_binary supports a new platform_type attribute, which, if
+    set to "watchos", will build dependencies for Apple's watchOS2.
+  - objc_binary now supports late-loaded dynamic frameworks.
+  - Native Swift rules no longer pull in module maps unconditionally.
+    Use --experimental_objc_enable_module_maps for that.
+  - Merged manifests are guaranteed to have the application element
+    as the last child of the manifest element as required by Android
+    N.
+  - The Android manifest merger is now available as an option for
+    android_binary rules. The merger will honor tools annotations in
+    AndroidManifest.xml and will perform placeholder substitutions
+    using the values specified in android_binary.manifest_values. The
+    merger may be selected by setting the manifest_merger attribute
+    on android_binary.
+  - The progress message would not clear packages that need to be
+    loaded twice.
+  - Remove warning for high value of --jobs.
+  - Use the correct build configuration for shared native deps during
+    Android split transitions.
+  - When building ObjectiveC++, pass the flag -std=gnu++11.
+  - use xcrun simctl instead of iossim to launch the app for "blaze
+    run".
+  - Glob arguments 'exclude' and 'exclude_directories' must be named
+  - Bazel no longer regards an empty file as changed if its mtime has
+    changed.
+
 ## Release 0.3.0 (2016-06-10)
 
 ```

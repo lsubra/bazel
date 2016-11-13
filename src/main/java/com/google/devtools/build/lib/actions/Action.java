@@ -19,10 +19,8 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ConditionallyThread
 import com.google.devtools.build.lib.profiler.Describable;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 import java.io.IOException;
 import java.util.Collection;
-
 import javax.annotation.Nullable;
 
 /**
@@ -146,38 +144,38 @@ public interface Action extends ActionExecutionMetadata, Describable {
 
   /**
    * Method used to find inputs before execution for an action that
-   * {@link ActionMetadata#discoversInputs}. Returns null if action's inputs will be discovered
-   * during execution proper.
+   * {@link ActionExecutionMetadata#discoversInputs}. Returns null if action's inputs will be
+   * discovered during execution proper.
    */
   @Nullable
-  Collection<Artifact> discoverInputs(ActionExecutionContext actionExecutionContext)
+  Iterable<Artifact> discoverInputs(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException;
 
   /**
-   * Method used to resolve action inputs based on the information contained in
-   * the action cache. It will be called iff inputsKnown() is false for the
-   * given action instance and there is a related cache entry in the action
-   * cache.
+   * Method used to resolve action inputs based on the information contained in the action cache. It
+   * will be called iff inputsKnown() is false for the given action instance and there is a related
+   * cache entry in the action cache.
    *
-   * Method must be redefined for any action that may return
-   * inputsKnown() == false.
+   * <p>Method must be redefined for any action that may return inputsKnown() == false.
    *
    * @param artifactResolver the artifact factory that can be used to manufacture artifacts
    * @param resolver object which helps to resolve some of the artifacts
    * @param inputPaths List of relative (to the execution root) input paths
    * @return List of Artifacts corresponding to inputPaths, or null if some dependencies were
-   * missing and we need to try again later.
+   *     missing and we need to try again later.
    * @throws PackageRootResolutionException on failure to determine package roots of inputPaths
    */
   @Nullable
   Iterable<Artifact> resolveInputsFromCache(
-      ArtifactResolver artifactResolver, PackageRootResolver resolver,
-      Collection<PathFragment> inputPaths) throws PackageRootResolutionException;
+      ArtifactResolver artifactResolver,
+      PackageRootResolver resolver,
+      Collection<PathFragment> inputPaths)
+      throws PackageRootResolutionException, InterruptedException;
 
   /**
    * Informs the action that its inputs are {@code inputs}, and that its inputs are now known. Can
    * only be called for actions that discover inputs. After this method is called,
-   * {@link ActionMetadata#inputsKnown} should return true.
+   * {@link ActionExecutionMetadata#inputsKnown} should return true.
    */
   void updateInputs(Iterable<Artifact> inputs);
 

@@ -22,7 +22,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.util.Fingerprint;
-
+import com.google.devtools.build.lib.util.LazyString;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Collection;
@@ -75,7 +75,23 @@ public final class FileWriteAction extends AbstractFileWriteAction {
   public FileWriteAction(ActionOwner owner, Collection<Artifact> inputs,
       Artifact output, CharSequence fileContents, boolean makeExecutable) {
     super(owner, inputs, output, makeExecutable);
+    if (fileContents instanceof String && fileContents.length() > 256) {
+      fileContents = new StoredAsUTF8((String) fileContents);
+    }
     this.fileContents = fileContents;
+  }
+
+  private static final class StoredAsUTF8 extends LazyString {
+    final byte[] bytes;
+
+    StoredAsUTF8(String chars) {
+      this.bytes = chars.getBytes(UTF_8);
+    }
+
+    @Override
+    public String toString() {
+      return new String(bytes, UTF_8);
+    }
   }
 
   /**
@@ -94,6 +110,11 @@ public final class FileWriteAction extends AbstractFileWriteAction {
 
   public String getFileContents() {
     return fileContents.toString();
+  }
+
+  @Override
+  public String getSkylarkContent() {
+    return getFileContents();
   }
 
   /**
@@ -136,7 +157,8 @@ public final class FileWriteAction extends AbstractFileWriteAction {
   public static Artifact createFile(RuleContext ruleContext,
       String fileName, CharSequence contents, boolean executable) {
     Artifact scriptFileArtifact = ruleContext.getPackageRelativeArtifact(
-        fileName, ruleContext.getConfiguration().getGenfilesDirectory());
+        fileName, ruleContext.getConfiguration().getGenfilesDirectory(
+            ruleContext.getRule().getRepository()));
     ruleContext.registerAction(new FileWriteAction(
         ruleContext.getActionOwner(), scriptFileArtifact, contents, executable));
     return scriptFileArtifact;

@@ -17,9 +17,10 @@
 # Test rules provided in Bazel not tested by examples
 #
 
-# Load test environment
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 function test_sh_test() {
   mkdir -p a
@@ -229,18 +230,26 @@ genrule(
   cmd = "(echo \"PATH=$$PATH\"; echo \"TMPDIR=$$TMPDIR\") > $@",
 )
 EOF
-  local old_path="${PATH-}"
+  local old_path="${PATH}"
   local old_tmpdir="${TMPDIR-}"
-  export PATH="/bin:/usr/bin:/random/path"
-  export TMPDIR="/some/path"
+  local new_tmpdir="$(mktemp -d "${TEST_TMPDIR}/newfancytmpdirXXXXXX")"
+  [ -d "${new_tmpdir}" ] || \
+    fail "Could not create new temporary directory ${new_tmpdir}"
+  export PATH="$PATH_TO_BAZEL_WRAPPER:/bin:/usr/bin:/random/path"
+  export TMPDIR="${new_tmpdir}"
   # batch mode to force reload of the environment
   bazel --batch build //pkg:test || fail "Failed to build //pkg:test"
-  export PATH="$old_path"
-  export TMPDIR="$old_tmpdir"
-  assert_contains "PATH=/bin:/usr/bin:/random/path" \
+  assert_contains "PATH=$PATH_TO_BAZEL_WRAPPER:/bin:/usr/bin:/random/path" \
     bazel-genfiles/pkg/test.out
-  assert_contains "TMPDIR=/some/path" \
+  assert_contains "TMPDIR=.*newfancytmpdir" \
     bazel-genfiles/pkg/test.out
+  if [ -n "${old_tmpdir}" ]
+  then
+    export TMPDIR="${old_tmpdir}"
+  else
+    unset TMPDIR
+  fi
+  export PATH="${old_path}"
 }
 
 function test_genrule_remote() {

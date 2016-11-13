@@ -16,9 +16,10 @@
 #
 # Tests the behavior of cc_inc_library.
 
-# Load test environment
-source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
-  || { echo "test-setup.sh not found!" >&2; exit 1; }
+# Load the test setup defined in the parent directory
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${CURRENT_DIR}/../integration_test_setup.sh" \
+  || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 function set_up() {
   rm -rf package
@@ -52,6 +53,53 @@ EOF
 function test_cc_inc_library_propagates_includes() {
   bazel build --verbose_failures //package:inc >& $TEST_log \
     || fail "Should build"
+}
+
+function test_cc_inc_library_stale_outputs() {
+  rm -rf package
+  mkdir -p package
+  cat > package/BUILD <<EOF
+cc_library(
+  name = "a",
+  srcs = ["a.cc"],
+  deps = [":inc"],
+)
+
+cc_inc_library(
+  name = "inc",
+  hdrs = ["foo.h", "bar.h"],
+)
+EOF
+
+  cat > package/a.cc <<EOF
+#include <package/foo.h>
+#include <package/bar.h>
+EOF
+
+  touch package/foo.h
+  touch package/bar.h
+
+  bazel build //package:a --spawn_strategy=standalone >& "$TEST_log" \
+      || fail "Should have succeeded"
+  cat > package/BUILD <<EOF
+cc_library(
+  name = "a",
+  srcs = ["a.cc"],
+  deps = [":inc", ":inc2"],
+)
+
+cc_inc_library(
+  name = "inc",
+  hdrs = ["foo.h"],
+)
+
+cc_inc_library(
+  name = "inc2",
+  hdrs = ["bar.h"],
+)
+EOF
+  bazel build //package:a --spawn_strategy=standalone >& "$TEST_log" \
+      || fail "Should have succeeded"
 }
 
 run_suite "cc_inc_library"
